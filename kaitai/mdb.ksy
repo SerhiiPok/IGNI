@@ -248,8 +248,8 @@ types:
         type:
           switch-on: node_type
           cases:
-            'node_type::trimesh': node_data_trimesh
-            'node_type::skin': node_data_skin
+            'node_type::trimesh': trimesh
+            'node_type::skin': trimesh
   controller_def:
     seq:
       - id: controller_type
@@ -326,7 +326,7 @@ types:
         size: 4
       - id: animation_array_pointer
         type: ptr_array_ptr('animation', _root.header.offset_tex_data_dummy + 32, 32)
-  node_data_skin:
+  trimesh:
     seq:
       - id: function_pointer
         size: 8
@@ -380,8 +380,10 @@ types:
         type: ptr('material', _root.header.offset_tex_data_dummy + 32)
       - id: unknown_9
         size: 4
+        if: is_skin
       - id: bones
         type: array_ptr('bone', _root.header.offset_tex_data_dummy + 32)
+        if: is_skin
       - id: unknown_11
         size: 4
       - id: vertices
@@ -402,88 +404,16 @@ types:
         type: array_ptr('face', 32)
       - id: unknown_10
         size: 36
+        if: is_skin
       - id: weights
         type: array_ptr('f4', 32)
+        if: is_skin
       - id: bones_something_ptr
         type: array_ptr('unknown', 32)
-  node_data_trimesh:
-    seq:
-      - id: function_pointer
-        size: 8
-      - id: offset_mesh_data
-        type: u4
-      - id: unknown_0
-        size: 4
-      - id: bbox
-        size: 24
-      - id: unknown_1
-        size: 28
-      - id: fog_scale
-        size: 4
-      - id: unknown_2
-        size: 16
-      - id: diffuse_amb_spec_color
-        size: 36
-      - id: render_settings_0
-        size: 16
-      - id: transparency_hint
-        type: u4
-      - id: unknown_3
-        size: 4
-      - id: textures
-        type: strl(64)
-        repeat: expr
-        repeat-expr: 4
-      - id: render_settings_1
-        size: 7
-      - id: unknown_4
-        size: 1
-      - id: transparency_shift
-        type: f4
-      - id: render_settings_2
-        size: 12
-      - id: unknown_5
-        size: 4
-      - id: render_settings_3
-        size: 13
-      - id: unknown_6
-        size: 20
-      - id: day_night_transition
-        type: strl(200)
-      - id: unknown_7
-        size: 23
-      - id: light_map_name
-        type: strl(64)
-      - id: unknown_8
-        size: 8
-      - id: material
-        type: ptr('material', _root.header.offset_tex_data_dummy + 32)
+        if: is_skin
     instances:
-      mesh_data:
-        pos: offset_mesh_data + 32
-        type: mesh_data
-      face_count:
-        value: mesh_data.faces_array_pointer.size
-  mesh_data:
-    seq:
-      - id: unknown_0
-        size: 4
-      - id: vertices
-        type: array_ptr('vertex', 32)
-      - id: normals_array_pointer
-        type: array_ptr('normal', 32)
-      - id: tangents_array_pointer
-        type: array_ptr('tangent', 32)
-      - id: binormals_array_pointer
-        type: array_ptr('normal', 32)
-      - id: texture_vertex_array_pointers
-        type: array_ptr('uv', 32)
-        repeat: expr
-        repeat-expr: 4
-      - id: unknown_data_array_pointer
-        type: array_ptr('unknown', 32)
-      - id: faces_array_pointer
-        type: array_ptr('face', 32)
+      is_skin:
+        value: _parent.node_type == node_type::skin
 enums:
   controller_type:
     84: position

@@ -127,7 +127,6 @@ types:
         type: u4
         repeat: expr
         repeat-expr: 5
-        type: u4
       - id: vert1
         type: u4
       - id: vert2

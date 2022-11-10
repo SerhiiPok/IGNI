@@ -8,81 +8,6 @@ import os
 import ntpath
 
 
-class ResourceType:
-
-    """
-    resource type, has a validator which checks if an arbitrary file is of this resource type,
-    and a resource loader, which loads resources of this type
-    """
-
-    def __init__(self, name, extension, validator=None, loader=None):
-        self.name = name
-        self.extension = extension
-
-        if validator is None:
-            self._user_validator = lambda s: True
-        else:
-            self._user_validator = validator
-
-        if loader is None:
-            self._loader = lambda fpath: open(fpath, 'rb')
-        else:
-            self._loader = loader
-
-    def validate(self, fpath):
-        if not fpath.endswith(self.extension):
-            return False
-        return self._user_validator(fpath)
-
-    def load_resource_data(self, fpath):
-        return self._loader(fpath)
-
-    def __str__(self):
-        return self.name
-
-    def __hash__(self):
-        return hash(self.name)
-
-    def __eq__(self, other):
-        if not isinstance(other, ResourceType):
-            return False
-        else:
-            if self.name == other.name:
-                return True
-
-
-class ResourceTypes:
-
-    MDB = ResourceType(name='mdb',
-                       extension='.mdb',
-                       validator=lambda fpath: not (any([b != 0 for b in open(fpath, 'rb').read(4)])),
-                       loader=lambda fpath: Mdb.from_file(fpath))
-
-    MBA = ResourceType(name='mba',
-                       extension='.mdb',
-                       validator=lambda fpath: not (any([b != 0 for b in open(fpath, 'rb').read(4)])),
-                       loader=lambda fpath: Mdb.from_file(fpath))
-
-    MDBT = ResourceType(name='mdbt',
-                        extension='.mdb',
-                        validator=lambda fpath: (any([b != 0 for b in open(fpath, 'rb').read(4)])))
-
-
-def resolve_resource_type(fpath) -> ResourceType:
-    return ResourceType()
-
-
-class Resource:
-
-    def __init__(self, fpath):
-        resource_type = resolve_resource_type(fpath)
-        self.path = fpath
-        self.resource = resource_type.load_resource_data(fpath)
-
-    def get(self):
-        return self.resource
-
-
 class FileSystem:
 
     """
@@ -249,6 +174,100 @@ class Directory:
 
     def list_extensions(self):
         return list(set([filepath.extension for filepath in self.files]))
+
+
+class ResourceType:
+
+    """
+    resource type, has a validator which checks if an arbitrary file is of this resource type,
+    and a resource loader, which loads resource data of this type
+    """
+
+    def __init__(self, name, extension, validator=None, loader=None):
+        self.name = name
+
+        if '.' in extension:
+            extension = extension.replace('.', '')
+        if not re.match('[a-z0-9]+'):
+            raise Exception('invalid extension "{}"'.format(extension))
+        self.extension = extension
+
+        if validator is None:
+            self._user_validator = lambda file: True
+        else:
+            self._user_validator = validator
+
+        if loader is None:
+            self._loader = lambda file: None
+        else:
+            self._loader = loader
+
+    def validate(self, file: File):
+        if not self.extension == file.extension:
+            return False
+        return self._user_validator(file)
+
+    def load_resource_data(self, file):
+        return self._loader(file)
+
+    def __str__(self):
+        return self.name
+
+    def __hash__(self):
+        return hash(self.name)
+
+    def __eq__(self, other):
+        if not isinstance(other, ResourceType):
+            return False
+        else:
+            if self.name == other.name:
+                return True
+
+
+class ResourceTypes:
+
+    MDB = ResourceType(name='mdb',
+                       extension='.mdb',
+                       validator=lambda fpath: not (any([b != 0 for b in open(fpath, 'rb').read(4)])),
+                       loader=lambda fpath: Mdb.from_file(fpath))
+
+    MBA = ResourceType(name='mba',
+                       extension='.mba',
+                       validator=lambda fpath: not (any([b != 0 for b in open(fpath, 'rb').read(4)])),
+                       loader=lambda fpath: Mdb.from_file(fpath))
+
+    MDBT = ResourceType(name='mdbt',
+                        extension='.mdb',
+                        validator=lambda fpath: (any([b != 0 for b in open(fpath, 'rb').read(4)])))
+
+
+class Resource:
+
+    def _guess_resource_type_(self, file: File) -> ResourceType:
+        attrs = [getattr(attr, ResourceTypes) for attr in dir(ResourceTypes)]
+        resource_types = [attr for attr in attrs if isinstance(attr, ResourceType)]
+
+        for resource_type in resource_types:
+            if resource_type.validate(file):
+                return resource_type
+
+        # TODO unknown resource type will always return true upon validation
+        return ResourceType('unknown<{}>'.format(file.extension),
+                            extension=file.extension)
+
+    def __init__(self, file: File, resource_type: ResourceType = None):
+        self.file: File = file
+
+        self.resource_type: ResourceType = None
+        if resource_type is None:
+            self.resource_type = self._guess_resource_type_(file)
+        else:
+            self.resource_type = resource_type
+
+        self.resource = self.resource_type.load_resource_data(file)
+
+    def get(self):
+        return self.resource
 
 
 class ResourceManager:

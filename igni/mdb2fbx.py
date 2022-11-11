@@ -2,6 +2,8 @@ from mdb import Mdb
 import fbx
 import sys
 import logging
+from settings import Settings
+from resources import Directory, Resource, ResourceTypes
 
 MEMORY_MANAGER = fbx.FbxManager.Create()
 
@@ -17,40 +19,6 @@ MODULE_CLOSE_INTERCEPTOR = OnModuleClose()
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-# logging context provides a way to put additional debug information into logs
-class LoggingContext:
-
-    def __init__(self):
-        self.file = ''
-        self.obj = None
-
-    def file(self, file_name):
-        self.file = file_name
-        return self
-
-    def object(self, obj):
-        self.obj = obj
-        return self
-
-    def clear(self):
-        self.file = ''
-        self.obj = None
-        return self
-
-    def __call__(self, msg):
-        # decorate the log message
-        prefix = ''
-        if self.file != '':
-            prefix = prefix + 'file: {} '.format(self.file)
-        if self.obj is not None:
-            if isinstance(self.obj, Mdb.Node):
-                prefix = prefix + 'node: {} '.format(self.obj.node_name.string)
-        return prefix + msg
-
-
-LOGGING_CONTEXT = LoggingContext()
 
 
 # a wrapper class for trimesh (triangular mesh) objects
@@ -81,25 +49,6 @@ class _Trimesh:
                 self.uvs_sets['UvSet{}'.format(i)] = [[c.u, c.v] for c in uv_array_pointer.data]
 
 
-def _log_trimesh(trimesh: _Trimesh):
-
-    if len(trimesh.vertices) == 0:
-        LOGGER.warning(LOGGING_CONTEXT('mesh vertices array is empty'))
-        return
-
-    if len(trimesh.faces) == 0:
-        LOGGER.warning(LOGGING_CONTEXT('mesh faces are not defined'))
-    if len(trimesh.normals) == 0:
-        LOGGER.warning(LOGGING_CONTEXT('mesh normals are not defined'))
-    # TODO uvs
-
-    if len(trimesh.vertices) != len(trimesh.normals) or len(trimesh.vertices) != len(trimesh.uvs):
-        LOGGER.warning(LOGGING_CONTEXT('number of mesh vertices is not equal to number of normals or uvs'))
-
-    LOGGER.debug(LOGGING_CONTEXT('mesh has {} faces and {} vertices'.format(
-        len(trimesh.faces), len(trimesh.vertices))))
-
-
 # a wrapper class for mdb materials
 class _Material:
 
@@ -125,163 +74,170 @@ class _Material:
                     self.textures[' '.join(texture_spec[:(len(texture_spec)-1)])] = texture_spec[len(texture_spec)-1]
 
 
-class ConverterConfiguration:
+class Mdb2FbxConverter:
 
-    def __init__(self):
-        self.skip_nodes = None
-        self.texture_path_handling = None
+    def _get_context_inf(self):
+        if isinstance(self.context, Mdb.Node):
+            return self.context.node_name
+        else:
+            return ''
 
+    # logging at four levels
+    def _decorate_message(self, msg):
+        inf = {
+            'input': self.source.file.full_file_name,
+            'msg': msg
+        }  # TODO file must have full file path attribute
 
-def _build_fbx_mesh(fbx_mesh: fbx.FbxMesh, trimesh: _Trimesh):
+        if self.context is not None:
+            inf['context'] = {
+                'type': str(type(self.context)),
+                'info': self._get_context_inf(self.context)
+            }
 
-    # -- check input parameters
-    _log_trimesh(trimesh)
+        return str(inf)
 
-    # -- build mesh data
-    fbx_mesh.InitControlPoints(len(trimesh.vertices))
-    for i in range(0, len(trimesh.vertices)):
-        vertex = trimesh.vertices[i]
-        fbx_mesh.SetControlPointAt(
-            fbx.FbxVector4(vertex[0], vertex[1], vertex[2], 0.0),
-            i
-        )
+    def debug(self, msg):
+        LOGGER.debug(self._decorate_message(msg))
 
-    for i in range(len(trimesh.faces)):
-        face = trimesh.faces[i]
-        fbx_mesh.BeginPolygon()
-        for vertex_index in face:
-            fbx_mesh.AddPolygon(vertex_index)
-        fbx_mesh.EndPolygon()
+    def info(self, msg):
+        LOGGER.info(self._decorate_message(msg))
 
-    for uv_set in trimesh.uvs:
-        uv_element: fbx.FbxLayerElementUV = fbx_mesh.CreateElementUV(uv_set)
-        uv_element.SetMappingMode(fbx.FbxLayerElementUV.eByControlPoint)
-        uv_element.SetReferenceMode(fbx.FbxLayerElement.eDirect)
+    def warn(self, msg):
+        LOGGER.warning(self._decorate_message(msg))
 
-        for uv_coord in trimesh.uvs[uv_set]:
-            uv_element.GetDirectArray().Add(fbx.FbxVector2(uv_coord[0], uv_coord[1]))
+    def error(self, msg):
+        LOGGER.error(self._decorate_message(msg))
 
+    def __init__(self, source: Resource, settings: Settings = Settings()):
+        assert(source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)
+        self.source: Resource = source
 
-def _build_fbx_node(fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
+        # default settings else supplied
+        self.settings: Settings = Settings()
+        self.settings\
+            .set('texture-handling.method', settings.get('texture-handling.method', 'with-fbx'))\
+            .set('skip-shadowbones', settings.get('skip-shadowbones', True))
+        if settings.get('texture-handling.method') == 'dest-dir':
+            self.settings.set('texture-handling.dest-dir', settings.get('texture-handling.dest-dir'))
 
-    fbx_node.SetName(source_node.node_name.string)
+        self.context = None
 
-    LOGGER.debug(LOGGING_CONTEXT('node type is {}'.format(source_node.node_type.name)))
+    def _log_trimesh(self, trimesh: _Trimesh):
 
-    # do translation, rotation, etc.
-    if source_node.node_type == Mdb.NodeType.trimesh or \
-            source_node.node_type == Mdb.NodeType.skin:
-        mesh = fbx.FbxMesh.Create(fbx_scene, '')
-        fbx_node.AddNodeAttribute(mesh)
-        _build_fbx_mesh(mesh,
-                        _Trimesh(source_node))
-    else:
-        LOGGER.debug(LOGGING_CONTEXT('this node type is not handled'))
+        if len(trimesh.vertices) == 0:
+            self.warn('mesh vertices array is empty')
+            return
 
+        if len(trimesh.faces) == 0:
+            self.warn('mesh faces are not defined')
+        if len(trimesh.normals) == 0:
+            self.warn('mesh normals are not defined')
+        # TODO uvs
 
-def _build_fbx_scene(fbx_scene: fbx.FbxScene, source: Mdb):
+        if len(trimesh.vertices) != len(trimesh.normals) or len(trimesh.vertices) != len(trimesh.uvs):
+            self.warn('number of mesh vertices is not equal to number of normals or uvs')
 
-    LOGGER.debug(LOGGING_CONTEXT('start building fbx scene'))
+        self.debug('mesh has {} faces and {} vertices'.format(
+            len(trimesh.faces), len(trimesh.vertices)))
 
-    def recursive_add_nodes(source_nodes, under_parent: fbx.FbxNode):
-        for source_node in source_nodes:
+    def _build_fbx_mesh(self, fbx_mesh: fbx.FbxMesh, trimesh: _Trimesh):
 
-            LOGGING_CONTEXT.object(source_node)
+        # -- check input parameters
+        self._log_trimesh(trimesh)
 
-            fbx_node = fbx.FbxNode.Create(fbx_scene, '')
-            under_parent.AddChild(fbx_node)
-            _build_fbx_node(fbx_node, source_node, fbx_scene)
-
-            LOGGING_CONTEXT.object(None)
-
-            recursive_add_nodes(
-                [child_ptr.data for child_ptr in source_node.children.data],
-                fbx_node
+        # -- build mesh data
+        fbx_mesh.InitControlPoints(len(trimesh.vertices))
+        for i in range(0, len(trimesh.vertices)):
+            vertex = trimesh.vertices[i]
+            fbx_mesh.SetControlPointAt(
+                fbx.FbxVector4(vertex[0], vertex[1], vertex[2], 0.0),
+                i
             )
 
-    LOGGER.debug(LOGGING_CONTEXT('building node tree'))
-    recursive_add_nodes([child_ptr.data for child_ptr in source.root_node.children.data],
-                        fbx_scene.GetRootNode())
+        for i in range(len(trimesh.faces)):
+            face = trimesh.faces[i]
+            fbx_mesh.BeginPolygon()
+            for vertex_index in face:
+                fbx_mesh.AddPolygon(vertex_index)
+            fbx_mesh.EndPolygon()
 
+        for uv_set in trimesh.uvs:
+            uv_element: fbx.FbxLayerElementUV = fbx_mesh.CreateElementUV(uv_set)
+            uv_element.SetMappingMode(fbx.FbxLayerElementUV.eByControlPoint)
+            uv_element.SetReferenceMode(fbx.FbxLayerElement.eDirect)
 
-def export(scene: fbx.FbxScene, dest):
+            for uv_coord in trimesh.uvs[uv_set]:
+                uv_element.GetDirectArray().Add(fbx.FbxVector2(uv_coord[0], uv_coord[1]))
 
-    LOGGER.debug(LOGGING_CONTEXT('exporting fbx scene'))
+    def _build_fbx_node(self, fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
 
-    fbx_exporter = fbx.FbxExporter.Create(MEMORY_MANAGER, '')
-    fbx_exporter.Initialize(dest, -1, MEMORY_MANAGER.GetIOSettings())
-    fbx_exporter.Export(scene)
-    fbx_exporter.Destroy()
+        fbx_node.SetName(source_node.node_name.string)
 
+        self.debug('node type is {}'.format(source_node.node_type.name))
 
-def from_mdb(mdb: Mdb) -> fbx.FbxScene:
-    fbx_scene = fbx.FbxScene.Create(MEMORY_MANAGER, mdb.root_node.node_name.string)
-    _build_fbx_scene(fbx_scene, mdb)
-    return fbx_scene
+        # do translation, rotation, etc.
+        if source_node.node_type == Mdb.NodeType.trimesh or \
+                source_node.node_type == Mdb.NodeType.skin:
+            mesh = fbx.FbxMesh.Create(fbx_scene, '')
+            fbx_node.AddNodeAttribute(mesh)
+            self._build_fbx_mesh(mesh,
+                            _Trimesh(source_node))
+        else:
+            self.debug('this node type is not handled')
 
+    def _build_fbx_scene(self, fbx_scene: fbx.FbxScene, source: Mdb):
 
-def from_bytes(byte_stream) -> fbx.FbxScene:
-    return from_mdb(Mdb.from_bytes(byte_stream))
+        self.debug('start building fbx scene')
 
+        def recursive_add_nodes(source_nodes, under_parent: fbx.FbxNode):
+            for source_node in source_nodes:
 
-def from_path(path) -> fbx.FbxScene:
-    LOGGING_CONTEXT.clear().file(path)
-    return from_mdb(Mdb.from_file(path))
+                self.context = source_node
 
+                fbx_node = fbx.FbxNode.Create(fbx_scene, '')
+                under_parent.AddChild(fbx_node)
+                self._build_fbx_node(fbx_node, source_node, fbx_scene)
 
-def convert(source, dest):
-    scene = from_path(source)
-    export(scene, dest)
-    scene.Destroy()
+                self.context = None
 
+                recursive_add_nodes(
+                    [child_ptr.data for child_ptr in source_node.children.data],
+                    fbx_node
+                )
 
-class Batch:
+        self.debug('building node tree')
+        recursive_add_nodes([child_ptr.data for child_ptr in source.root_node.children.data],
+                            fbx_scene.GetRootNode())
 
-    OUTPUT_ALREADY_EXISTS_REPLACE_HANDLING = 0
-    OUTPUT_ALREADY_EXISTS_SKIP_HANDLING = 1
-    OUTPUT_ALREADY_EXISTS_FAIL_HANDLING = 2
+    def export(self, scene: fbx.FbxScene, dest):
 
-    TEXTURE_OUTPUT_HANDLING_WITH_MODEL = 0
-    TEXTURE_OUTPUT_HANDLING_SEPARATE_FOLDER_FOR_ALL = 1
+        self.debug('exporting fbx scene')
 
-    def __init__(self):
-        self.content_directory = ''
-        self.destination_directory = ''
-        self.resource_filter = None
-        self.resolve_resource_output_path = None
-        self.texture_output_handling = Batch.TEXTURE_OUTPUT_HANDLING_SEPARATE_FOLDER_FOR_ALL
-        self.output_already_exists_handling = Batch.OUTPUT_ALREADY_EXISTS_REPLACE_HANDLING
+        fbx_exporter = fbx.FbxExporter.Create(MEMORY_MANAGER, '')
+        fbx_exporter.Initialize(dest, -1, MEMORY_MANAGER.GetIOSettings())
+        fbx_exporter.Export(scene)
+        fbx_exporter.Destroy()
 
-    def content_directory(self, content_directory):
-        self.content_directory = content_directory
-        return self
+    def from_mdb(self, mdb: Mdb) -> fbx.FbxScene:
+        fbx_scene = fbx.FbxScene.Create(MEMORY_MANAGER, mdb.root_node.node_name.string)
+        self._build_fbx_scene(fbx_scene, mdb)
+        return fbx_scene
 
-    def destination_directory(self, destination_directory):
-        self.destination_directory = destination_directory
+    def from_bytes(self, byte_stream) -> fbx.FbxScene:
+        return self.from_mdb(Mdb.from_bytes(byte_stream))
 
-    def resource_filter(self, resource_filter):
-        self.resource_filter = resource_filter
-        return self
+    def from_path(self, path) -> fbx.FbxScene:
+        return self.from_mdb(Mdb.from_file(path))
 
-    def resolve_resource_output_path(self, resolve_resource_output_path):
-        self.resolve_resource_output_path = resolve_resource_output_path
-        return self
-
-    def texture_output_handling(self, texture_output_handling):
-        self.texture_output_handling = texture_output_handling
-        return self
-
-    def output_already_exists_handling(self, output_already_exists_handling):
-        self.output_already_exists_handling = output_already_exists_handling
-        return self
-
-    def run(self):
-        pass
+    def convert(self, source, dest):
+        scene = self.from_path(source)
+        self.export(scene, dest)
+        scene.Destroy()
 
 
 if __name__ == '__main__':
-    # TODO proper handling of command line arguments
-    # TODO redesign how the files will be launched
-    source_path = sys.argv[1]
-    dest_path = sys.argv[2]
-    convert(source_path, dest_path)
+    Mdb2FbxConverter(
+        Resource(sys.argv[1]),
+        Settings.from_cmd_args(sys.argv[3:])
+    ).export(Directory(sys.argv[2]))

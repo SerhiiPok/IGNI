@@ -22,7 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 # a wrapper class for trimesh (triangular mesh) objects
-class _Trimesh:
+class Trimesh:
 
     def __init__(self, source_node: Mdb.Node):
         if source_node is None:
@@ -50,7 +50,7 @@ class _Trimesh:
 
 
 # a wrapper class for mdb materials
-class _Material:
+class Material:
 
     def __init__(self, material_descr: Mdb.Material):
         if material_descr is None:
@@ -109,21 +109,24 @@ class Mdb2FbxConverter:
     def error(self, msg):
         LOGGER.error(self._decorate_message(msg))
 
-    def __init__(self, source: Resource, settings: Settings = Settings()):
-        assert(source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)
-        self.source: Resource = source
+    def _init_settings(self, settings: Settings):
+        self.settings \
+            .set('texture-handling.method', settings.get('texture-handling.method', 'with-fbx')) \
+            .set('skip-shadowbones', settings.get('skip-shadowbones', True)) \
+            .set('logging.level', settings.get('logging.level', logging.WARNING))
 
-        # default settings else supplied
-        self.settings: Settings = Settings()
-        self.settings\
-            .set('texture-handling.method', settings.get('texture-handling.method', 'with-fbx'))\
-            .set('skip-shadowbones', settings.get('skip-shadowbones', True))
         if settings.get('texture-handling.method') == 'dest-dir':
             self.settings.set('texture-handling.dest-dir', settings.get('texture-handling.dest-dir'))
 
+    def __init__(self, source: Resource, settings: Settings = Settings()):
+        assert(source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)
+        self.source: Resource = source
+        self.settings: Settings = Settings()
         self.context = None
 
-    def _log_trimesh(self, trimesh: _Trimesh):
+        self._init_settings(settings)
+
+    def _log_trimesh(self, trimesh: Trimesh):
 
         if len(trimesh.vertices) == 0:
             self.warn('mesh vertices array is empty')
@@ -141,7 +144,7 @@ class Mdb2FbxConverter:
         self.debug('mesh has {} faces and {} vertices'.format(
             len(trimesh.faces), len(trimesh.vertices)))
 
-    def _build_fbx_mesh(self, fbx_mesh: fbx.FbxMesh, trimesh: _Trimesh):
+    def _build_fbx_mesh(self, fbx_mesh: fbx.FbxMesh, trimesh: Trimesh):
 
         # -- check input parameters
         self._log_trimesh(trimesh)
@@ -182,7 +185,7 @@ class Mdb2FbxConverter:
             mesh = fbx.FbxMesh.Create(fbx_scene, '')
             fbx_node.AddNodeAttribute(mesh)
             self._build_fbx_mesh(mesh,
-                            _Trimesh(source_node))
+                                 Trimesh(source_node))
         else:
             self.debug('this node type is not handled')
 
@@ -210,7 +213,7 @@ class Mdb2FbxConverter:
         recursive_add_nodes([child_ptr.data for child_ptr in source.root_node.children.data],
                             fbx_scene.GetRootNode())
 
-    def export(self, scene: fbx.FbxScene, dest):
+    def _export(self, scene: fbx.FbxScene, dest):
 
         self.debug('exporting fbx scene')
 
@@ -219,25 +222,20 @@ class Mdb2FbxConverter:
         fbx_exporter.Export(scene)
         fbx_exporter.Destroy()
 
-    def from_mdb(self, mdb: Mdb) -> fbx.FbxScene:
-        fbx_scene = fbx.FbxScene.Create(MEMORY_MANAGER, mdb.root_node.node_name.string)
-        self._build_fbx_scene(fbx_scene, mdb)
-        return fbx_scene
+    def convert(self) -> fbx.FbxScene:
+        mdb_source = Mdb.from_file(self.source.file.full_file_name)  # TODO add full file path
+        dest_scene = fbx.FbxScene.Create(MEMORY_MANAGER, mdb_source.root_node.node_name.string)
+        self._build_fbx_scene(dest_scene, mdb_source)
+        return dest_scene
 
-    def from_bytes(self, byte_stream) -> fbx.FbxScene:
-        return self.from_mdb(Mdb.from_bytes(byte_stream))
-
-    def from_path(self, path) -> fbx.FbxScene:
-        return self.from_mdb(Mdb.from_file(path))
-
-    def convert(self, source, dest):
-        scene = self.from_path(source)
-        self.export(scene, dest)
-        scene.Destroy()
+    def convert_and_export(self, destination: Directory):
+        fbx_scene = self.convert()
+        self._export(fbx_scene, destination.full_path)
+        fbx_scene.Destroy()
 
 
 if __name__ == '__main__':
     Mdb2FbxConverter(
         Resource(sys.argv[1]),
         Settings.from_cmd_args(sys.argv[3:])
-    ).export(Directory(sys.argv[2]))
+    ).convert_and_export(Directory(sys.argv[2]))

@@ -1,9 +1,7 @@
 # a utility for managing / loading the witcher game resources from the root folder with resources
-import ntpath
 import re
 
 from mdb import Mdb
-import mdb2fbx
 import os
 import ntpath
 
@@ -32,7 +30,7 @@ class File:
 
     def __init__(self, full_file_path: str):
 
-        self._full_file_path = None
+        self.full_path = None
         self.full_file_name = None
         self.file_name = None
         self.file_extension = None
@@ -46,7 +44,7 @@ class File:
         self._init_data_(full_file_path)
 
     def __str__(self):
-        return self._full_file_path
+        return self.full_path
 
     def __hash__(self):
         return hash(str(self))
@@ -54,13 +52,13 @@ class File:
     @property
     def size(self):
         if self._size is None:
-            self._size = os.path.getsize(self._full_file_path)
+            self._size = os.path.getsize(self.full_path)
         return self._size
 
     def _init_data_(self, full_file_path: str):
 
         if os.path.exists(full_file_path) and os.path.isfile(full_file_path):
-            self._full_file_path = full_file_path
+            self.full_path = full_file_path
         else:
             raise Exception('file path "{}" is invalid'.format(full_file_path))
 

@@ -1,9 +1,13 @@
 from mdb import Mdb
+import os
 import fbx
 import sys
 import logging
 from settings import Settings
-from resources import Directory, Resource, ResourceTypes
+from resources import Directory, File, Resource, ResourceTypes
+
+LOGGER = logging.getLogger(__name__)
+
 
 MEMORY_MANAGER = fbx.FbxManager.Create()
 
@@ -11,14 +15,11 @@ MEMORY_MANAGER = fbx.FbxManager.Create()
 class OnModuleClose:
 
     def __del__(self):
-        print('on module close called')
+        LOGGER.debug('destroying fbx memory manager...')
         MEMORY_MANAGER.Destroy()
 
 
 MODULE_CLOSE_INTERCEPTOR = OnModuleClose()
-
-
-LOGGER = logging.getLogger(__name__)
 
 
 # a wrapper class for trimesh (triangular mesh) objects
@@ -46,7 +47,7 @@ class Trimesh:
         for i in range(0, 4):
             uv_array_pointer = node_data.uvs[i]
             if uv_array_pointer.data is not None and len(uv_array_pointer.data) > 0:
-                self.uvs_sets['UvSet{}'.format(i)] = [[c.u, c.v] for c in uv_array_pointer.data]
+                self.uv_sets['UvSet{}'.format(i)] = [[c.u, c.v] for c in uv_array_pointer.data]
 
 
 # a wrapper class for mdb materials
@@ -74,25 +75,37 @@ class Material:
                     self.textures[' '.join(texture_spec[:(len(texture_spec)-1)])] = texture_spec[len(texture_spec)-1]
 
 
+MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = {
+    'texture-handling': {
+        'method': str
+    },
+    'skip-shadowbones': bool,
+    'logging': {
+        'level': str
+    },
+    'unit-conversion-factor': float
+}
+
+
 class Mdb2FbxConverter:
 
     def _get_context_inf(self):
         if isinstance(self.context, Mdb.Node):
-            return self.context.node_name
+            return self.context.node_name.string
         else:
             return ''
 
     # logging at four levels
     def _decorate_message(self, msg):
         inf = {
-            'input': self.source.file.full_file_name,
+            'input': str(self.source.file),
             'msg': msg
         }  # TODO file must have full file path attribute
 
         if self.context is not None:
             inf['context'] = {
                 'type': str(type(self.context)),
-                'info': self._get_context_inf(self.context)
+                'info': self._get_context_inf()
             }
 
         return str(inf)
@@ -113,7 +126,8 @@ class Mdb2FbxConverter:
         self.settings \
             .set('texture-handling.method', settings.get('texture-handling.method', 'with-fbx')) \
             .set('skip-shadowbones', settings.get('skip-shadowbones', True)) \
-            .set('logging.level', settings.get('logging.level', logging.WARNING))
+            .set('logging.level', settings.get('logging.level', logging.WARNING)) \
+            .set('unit-conversion-factor', settings.get('unit-conversion-factor', 100.0))
 
         if settings.get('texture-handling.method') == 'dest-dir':
             self.settings.set('texture-handling.dest-dir', settings.get('texture-handling.dest-dir'))
@@ -125,6 +139,8 @@ class Mdb2FbxConverter:
         self.context = None
 
         self._init_settings(settings)
+
+        LOGGER.setLevel(self.settings.get('logging.level'))
 
     def _log_trimesh(self, trimesh: Trimesh):
 
@@ -138,7 +154,11 @@ class Mdb2FbxConverter:
             self.warn('mesh normals are not defined')
         # TODO uvs
 
-        if len(trimesh.vertices) != len(trimesh.normals) or len(trimesh.vertices) != len(trimesh.uvs):
+        inconsistent_lengths = len(trimesh.vertices) != len(trimesh.normals)
+        for uv_set in trimesh.uv_sets:
+            if len(trimesh.vertices) != len(uv_set):
+                inconsistent_lengths = True
+        if inconsistent_lengths:
             self.warn('number of mesh vertices is not equal to number of normals or uvs')
 
         self.debug('mesh has {} faces and {} vertices'.format(
@@ -151,10 +171,13 @@ class Mdb2FbxConverter:
 
         # -- build mesh data
         fbx_mesh.InitControlPoints(len(trimesh.vertices))
+        unit_conversion_factor = self.settings.get('unit-conversion-factor')
         for i in range(0, len(trimesh.vertices)):
             vertex = trimesh.vertices[i]
             fbx_mesh.SetControlPointAt(
-                fbx.FbxVector4(vertex[0], vertex[1], vertex[2], 0.0),
+                fbx.FbxVector4(vertex[0]*unit_conversion_factor,
+                               vertex[1]*unit_conversion_factor,
+                               vertex[2]*unit_conversion_factor, 0.0),
                 i
             )
 
@@ -165,12 +188,12 @@ class Mdb2FbxConverter:
                 fbx_mesh.AddPolygon(vertex_index)
             fbx_mesh.EndPolygon()
 
-        for uv_set in trimesh.uvs:
-            uv_element: fbx.FbxLayerElementUV = fbx_mesh.CreateElementUV(uv_set)
+        for uv_set_name in trimesh.uv_sets:
+            uv_element: fbx.FbxLayerElementUV = fbx_mesh.CreateElementUV(uv_set_name)
             uv_element.SetMappingMode(fbx.FbxLayerElementUV.eByControlPoint)
             uv_element.SetReferenceMode(fbx.FbxLayerElement.eDirect)
 
-            for uv_coord in trimesh.uvs[uv_set]:
+            for uv_coord in trimesh.uv_sets[uv_set_name]:
                 uv_element.GetDirectArray().Add(fbx.FbxVector2(uv_coord[0], uv_coord[1]))
 
     def _build_fbx_node(self, fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
@@ -198,6 +221,14 @@ class Mdb2FbxConverter:
 
                 self.context = source_node
 
+                # meshes reserved for casting shadows can be skipped on request of user
+                if 'shadowbone' in source_node.node_name.string:
+                    if self.settings.get('skip-shadowbones'):
+                        if len(source_node.children.data) > 0:
+                            self.warn('shadowbones are skipped but this one has children which will result in data loss')
+                        else:
+                            continue
+
                 fbx_node = fbx.FbxNode.Create(fbx_scene, '')
                 under_parent.AddChild(fbx_node)
                 self._build_fbx_node(fbx_node, source_node, fbx_scene)
@@ -218,12 +249,12 @@ class Mdb2FbxConverter:
         self.debug('exporting fbx scene')
 
         fbx_exporter = fbx.FbxExporter.Create(MEMORY_MANAGER, '')
-        fbx_exporter.Initialize(dest, -1, MEMORY_MANAGER.GetIOSettings())
+        fbx_exporter.Initialize(os.path.join(dest, self.source.file.name), -1, MEMORY_MANAGER.GetIOSettings())
         fbx_exporter.Export(scene)
         fbx_exporter.Destroy()
 
     def convert(self) -> fbx.FbxScene:
-        mdb_source = Mdb.from_file(self.source.file.full_file_name)  # TODO add full file path
+        mdb_source = Mdb.from_file(str(self.source.file))  # TODO add full file path
         dest_scene = fbx.FbxScene.Create(MEMORY_MANAGER, mdb_source.root_node.node_name.string)
         self._build_fbx_scene(dest_scene, mdb_source)
         return dest_scene
@@ -236,6 +267,6 @@ class Mdb2FbxConverter:
 
 if __name__ == '__main__':
     Mdb2FbxConverter(
-        Resource(sys.argv[1]),
+        Resource(File(sys.argv[1])),
         Settings.from_cmd_args(sys.argv[3:])
     ).convert_and_export(Directory(sys.argv[2]))

@@ -32,11 +32,11 @@ class File:
 
         self.full_path = None
         self.full_file_name = None
-        self.file_name = None
-        self.file_extension = None
-        self.file_name_prefix = None
-        self.file_name_suffix = None
-        self.file_name_root = None
+        self.name = None
+        self.extension = None
+        self.name_prefix = None
+        self.name_suffix = None
+        self.name_root = None
         self.location: Directory = None
 
         self._size = None
@@ -186,7 +186,7 @@ class ResourceType:
 
         if '.' in extension:
             extension = extension.replace('.', '')
-        if not re.match('[a-z0-9]+'):
+        if not re.match('[a-z0-9]+', extension):
             raise Exception('invalid extension "{}"'.format(extension))
         self.extension = extension
 
@@ -224,25 +224,30 @@ class ResourceType:
 
 class ResourceTypes:
 
+    @classmethod
+    def is_mdb_binary(cls, file: File):
+        with open(str(file), 'rb') as f:
+            return not (any([b != 0 for b in f.read(4)]))
+
     MDB = ResourceType(name='mdb',
                        extension='.mdb',
-                       validator=lambda fpath: not (any([b != 0 for b in open(fpath, 'rb').read(4)])),
-                       loader=lambda fpath: Mdb.from_file(fpath))
+                       validator=lambda file: ResourceTypes.is_mdb_binary(file),
+                       loader=lambda file: Mdb.from_file(str(file)))
 
     MBA = ResourceType(name='mba',
                        extension='.mba',
-                       validator=lambda fpath: not (any([b != 0 for b in open(fpath, 'rb').read(4)])),
-                       loader=lambda fpath: Mdb.from_file(fpath))
+                       validator=lambda file: ResourceTypes.is_mdb_binary(file),
+                       loader=lambda file: Mdb.from_file(str(file)))
 
     MDBT = ResourceType(name='mdbt',
                         extension='.mdb',
-                        validator=lambda fpath: (any([b != 0 for b in open(fpath, 'rb').read(4)])))
+                        validator=lambda file: not ResourceTypes.is_mdb_binary(file))
 
 
 class Resource:
 
     def _guess_resource_type_(self, file: File) -> ResourceType:
-        attrs = [getattr(attr, ResourceTypes) for attr in dir(ResourceTypes)]
+        attrs = [getattr(ResourceTypes, attr) for attr in dir(ResourceTypes)]
         resource_types = [attr for attr in attrs if isinstance(attr, ResourceType)]
 
         for resource_type in resource_types:

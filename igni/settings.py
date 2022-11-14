@@ -23,7 +23,7 @@ class Settings:
                 raise Exception('invalid command line setting: "{}"'.format(cmd_arg))
 
             key = key_and_value[0]
-            if key.startswith('-'):
+            while key.startswith('-'):
                 key = key[1:]
 
             val = key_and_value[1]

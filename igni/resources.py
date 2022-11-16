@@ -1,7 +1,7 @@
 # a utility for managing / loading the witcher game resources from the root folder with resources
 import re
 
-from mdb import Mdb
+from .mdb import Mdb
 import os
 import ntpath
 
@@ -104,10 +104,10 @@ class Directory:
 
     def _init_data_(self):
         self._dir_contents = [os.path.join(self.full_path, file_name) for file_name in os.listdir(self.full_path)]
-        self._files = [File(f) for f in self.dir_contents if os.path.isfile(f)]
+        self._files = [File(f) for f in self._dir_contents if os.path.isfile(f)]
 
         # reuse cached directories if possible
-        self._subdirs = [FILE_SYSTEM.get_directory(Directory(f)) for f in self.dir_contents if os.path.isdir(f)]
+        self._subdirectories = [FILE_SYSTEM.get_directory(Directory(f)) for f in self._dir_contents if os.path.isdir(f)]
 
     @property
     def files(self):
@@ -280,7 +280,7 @@ class ResourceManager:
         self.files = self.root_directory.collect_files()
 
     def get_all_of_type(self, resource_type: ResourceType, filterer=None):
-        resources = [Resource(str(file)) for file in self.files if resource_type.validate(str(file))]
+        resources = [Resource(file, resource_type) for file in self.files if resource_type.validate(file)]
         if filterer is not None:
             resources = [resource for resource in resources if filterer(resource)]
         return resources

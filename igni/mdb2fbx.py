@@ -1,10 +1,10 @@
-from mdb import Mdb
+from .mdb import Mdb
 import os
 import fbx
 import sys
 import logging
-from settings import Settings
-from resources import Directory, File, Resource, ResourceTypes
+from .settings import Settings
+from .resources import Directory, File, Resource, ResourceTypes
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,26 +53,86 @@ class Trimesh:
 # a wrapper class for mdb materials
 class Material:
 
+    class Texture:
+
+        def __init__(self, type_, name):
+            self.type: str = type_
+            self.name: str = name
+
+        def __str__(self):
+            return self.name
+
+        def __hash__(self):
+            return hash(str(self))
+
     def __init__(self, material_descr: Mdb.Material):
         if material_descr is None:
             raise Exception('tried to create material wrapper but material description is None')
 
         self.shader = ''
         self.textures = {}
+        self.bumpmaps = {}
+        self.properties = {}
 
-        self.set_data(material_descr)
+        self.parse_data(material_descr.material_spec)
 
-    def set_data(self, material_descr: Mdb.Material):
+    def __str__(self):
+        data = {'shader': self.shader,
+                'textures': self.textures,
+                'bumpmaps': self.bumpmaps,
+                'properties': self.properties}
+        return str(data)
 
-        for line in material_descr.material_spec:
-            if line.startswith('shader'):
-                self.shader = line.replace('shader', '').lstrip().rstrip()
-            else:
-                texture_spec = line.split(' ')
-                if len(texture_spec) == 1:
-                    raise Exception('found unusual material specification line: ' + line)
+    def parse_data(self, material_spec: list):
+
+        def line_clean_up(line):
+            return line.replace('\\r\\n', ' ').lstrip().rstrip()
+
+        for line in material_spec:
+            l_ = line_clean_up(line)
+
+            if len(l_) == 0:
+                continue
+
+            parts = l_.split(' ')
+            descriptor = parts[0]
+
+            if descriptor == 'shader':
+                if len(parts) != 2:
+                    raise Exception('unexpected shader specification: {}'.format(l_))
                 else:
-                    self.textures[' '.join(texture_spec[:(len(texture_spec)-1)])] = texture_spec[len(texture_spec)-1]
+                    self.shader = parts[1]
+
+            elif descriptor == 'texture':
+                if len(parts) != 3:
+                    raise Exception('unexpected texture specification: {}'.format(l_))
+                else:
+                    if parts[1] in self.textures:
+                        raise Exception('duplicated texture found: {}'.format(l_))
+                    self.textures[parts[1]] = parts[2]
+
+            elif descriptor == 'bumpmap':
+                if len(parts) != 3:
+                    raise Exception('unexpected bumpmap specification: {}'.format(l_))
+                else:
+                    if parts[1] in self.bumpmaps:
+                        raise Exception('duplicated bumpmap found: {}'.format(l_))
+                    self.bumpmaps[parts[1]] = parts[2]
+
+            elif descriptor == 'float' or descriptor == 'string':
+                if len(parts) != 3:
+                    raise Exception('unexpected property specification: {}'.format(l_))
+                else:
+                    self.properties[parts[1]] = parts[2]
+
+            elif descriptor == 'vector':
+                if len(parts) != 6:
+                    raise Exception('unexpected vector property specification: {}'.format(l_))
+                else:
+                    self.properties[parts[1]] = (parts[2], parts[3], parts[4], parts[5])
+
+            else:
+                raise Exception('unexpected material line: {}'.format(l_))
 
 
 MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = {

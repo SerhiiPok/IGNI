@@ -8,7 +8,6 @@ from .resources import Directory, File, Resource, ResourceTypes
 
 LOGGER = logging.getLogger(__name__)
 
-
 MEMORY_MANAGER = fbx.FbxManager.Create()
 
 
@@ -52,18 +51,6 @@ class Trimesh:
 
 # a wrapper class for mdb materials
 class Material:
-
-    class Texture:
-
-        def __init__(self, type_, name):
-            self.type: str = type_
-            self.name: str = name
-
-        def __str__(self):
-            return self.name
-
-        def __hash__(self):
-            return hash(str(self))
 
     def __init__(self, material_descr: Mdb.Material):
         if material_descr is None:
@@ -137,13 +124,25 @@ class Material:
 
 MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = {
     'texture-handling': {
-        'method': str
+        'method': str,
+        'dest-dir': Directory
     },
     'skip-shadowbones': bool,
     'logging': {
         'level': str
     },
     'unit-conversion-factor': float
+}
+
+MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS = {
+    'texture-handling': {
+        'method': 'with-file'
+    },
+    'skip-shadowbones': True,
+    'logging': {
+        'level': 'INFO'
+    },
+    'unit-conversion-factor': 100.0
 }
 
 
@@ -193,7 +192,7 @@ class Mdb2FbxConverter:
             self.settings.set('texture-handling.dest-dir', settings.get('texture-handling.dest-dir'))
 
     def __init__(self, source: Resource, settings: Settings = Settings()):
-        assert(source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)
+        assert (source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)
         self.source: Resource = source
         self.settings: Settings = Settings()
         self.context = None
@@ -235,9 +234,9 @@ class Mdb2FbxConverter:
         for i in range(0, len(trimesh.vertices)):
             vertex = trimesh.vertices[i]
             fbx_mesh.SetControlPointAt(
-                fbx.FbxVector4(vertex[0]*unit_conversion_factor,
-                               vertex[1]*unit_conversion_factor,
-                               vertex[2]*unit_conversion_factor, 0.0),
+                fbx.FbxVector4(vertex[0] * unit_conversion_factor,
+                               vertex[1] * unit_conversion_factor,
+                               vertex[2] * unit_conversion_factor, 0.0),
                 i
             )
 
@@ -285,7 +284,8 @@ class Mdb2FbxConverter:
                 if 'shadowbone' in source_node.node_name.string:
                     if self.settings.get('skip-shadowbones'):
                         if len(source_node.children.data) > 0:
-                            self.warn('shadowbones are skipped but this one has children which will result in data loss')
+                            self.warn(
+                                'shadowbones are skipped but this one has children which will result in data loss')
                         else:
                             continue
 
@@ -328,5 +328,7 @@ class Mdb2FbxConverter:
 if __name__ == '__main__':
     Mdb2FbxConverter(
         Resource(File(sys.argv[1])),
-        Settings.from_cmd_args(sys.argv[3:])
+        Settings(MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE).
+            accept_tree(MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS).
+            accept_cmd_args(sys.argv[3:])
     ).convert_and_export(Directory(sys.argv[2]))

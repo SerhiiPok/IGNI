@@ -153,16 +153,18 @@ class Material:
                 raise Exception('unexpected material line: {}'.format(l_))
 
 
-def print_node_tree(node, print_this = lambda nd: nd.node_name.string):
+def print_node_tree(node, print_this=lambda nd: nd.node_name.string):
 
-    def recursive_print(nodes, indent_string, print_this):
+    def recursive_print(nodes, indent_string, depth, print_this):
+        if len(nodes) == 0:
+            return
         for node in [node_ptr.data for node_ptr in nodes]:
-            print_this = print_this(node)
-            print(indent_string + print_this)
-            recursive_print(node.children.data)
+            this = print_this(node)
+            print(indent_string*depth + this)
+            recursive_print(node.children.data, indent_string, depth + 1, print_this)
 
     print(print_this(node))
-    recursive_print(node.children.data, '-- ', print_this)
+    recursive_print(node.children.data, '-- ', 1, print_this)
 
 
 class MdbWrapper:
@@ -182,11 +184,12 @@ class MdbWrapper:
 
                 # materials
                 if node.node_data.material.data is not None:
-                    self.materials.append(Material(node.node_data.material.data.material_spec))
+                    self.materials.append(Material(node.node_data.material.data))
 
             for child_node_pointer in node.children.data:
                 recursive_node_scan(child_node_pointer.data, mdb_wrapper)
 
+        self.nodes.append(self.mdb.root_node)
         recursive_node_scan(self.mdb.root_node, self)
 
         # animations

@@ -57,6 +57,9 @@ class Settings:
         self._type_hint = type_hint
         self._props = {}
 
+    def has(self, property_name):
+        return property_name in self._props
+
     def get(self, property_name):
         if property_name in self._props:
             return self._props[property_name]

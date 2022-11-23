@@ -5,6 +5,7 @@ import sys
 import logging
 from .settings import Settings
 from .resources import Directory, File, Resource, ResourceTypes
+from .mdbutil import MdbWrapper, Material, Trimesh
 
 LOGGER = logging.getLogger(__name__)
 
@@ -21,113 +22,14 @@ class OnModuleClose:
 MODULE_CLOSE_INTERCEPTOR = OnModuleClose()
 
 
-# a wrapper class for trimesh (triangular mesh) objects
-class Trimesh:
-
-    def __init__(self, source_node: Mdb.Node):
-        if source_node is None:
-            raise Exception('tried to create a trimesh wrapper but source node is None')
-        if source_node.node_type not in (Mdb.NodeType.trimesh, Mdb.NodeType.skin):
-            raise Exception('cannot create a trimesh wrapper from a node that is not skin or trimesh')
-
-        self.vertices = []
-        self.faces = []
-        self.normals = []
-        self.uv_sets = {}
-
-        self.set_data(source_node)
-
-    def set_data(self, source_node: Mdb.Node):
-        node_data = source_node.node_data
-        self.vertices = [[v.x, v.y, v.z] for v in node_data.vertices.data]
-        self.faces = [[f.vert1, f.vert2, f.vert3] for f in node_data.faces.data]
-        self.normals = [[n.x, n.y, n.z] for n in node_data.normals.data]
-
-        for i in range(0, 4):
-            uv_array_pointer = node_data.uvs[i]
-            if uv_array_pointer.data is not None and len(uv_array_pointer.data) > 0:
-                self.uv_sets['UvSet{}'.format(i)] = [[c.u, c.v] for c in uv_array_pointer.data]
-
-
-# a wrapper class for mdb materials
-class Material:
-
-    def __init__(self, material_descr: Mdb.Material):
-        if material_descr is None:
-            raise Exception('tried to create material wrapper but material description is None')
-
-        self.shader = ''
-        self.textures = {}
-        self.bumpmaps = {}
-        self.properties = {}
-
-        self.parse_data(material_descr.material_spec)
-
-    def __str__(self):
-        data = {'shader': self.shader,
-                'textures': self.textures,
-                'bumpmaps': self.bumpmaps,
-                'properties': self.properties}
-        return str(data)
-
-    def parse_data(self, material_spec: list):
-
-        def line_clean_up(line):
-            return line.replace('\\r\\n', ' ').lstrip().rstrip()
-
-        for line in material_spec:
-            l_ = line_clean_up(line)
-
-            if len(l_) == 0:
-                continue
-
-            parts = l_.split(' ')
-            descriptor = parts[0]
-
-            if descriptor == 'shader':
-                if len(parts) != 2:
-                    raise Exception('unexpected shader specification: {}'.format(l_))
-                else:
-                    self.shader = parts[1]
-
-            elif descriptor == 'texture':
-                if len(parts) != 3:
-                    raise Exception('unexpected texture specification: {}'.format(l_))
-                else:
-                    if parts[1] in self.textures:
-                        raise Exception('duplicated texture found: {}'.format(l_))
-                    self.textures[parts[1]] = parts[2]
-
-            elif descriptor == 'bumpmap':
-                if len(parts) != 3:
-                    raise Exception('unexpected bumpmap specification: {}'.format(l_))
-                else:
-                    if parts[1] in self.bumpmaps:
-                        raise Exception('duplicated bumpmap found: {}'.format(l_))
-                    self.bumpmaps[parts[1]] = parts[2]
-
-            elif descriptor == 'float' or descriptor == 'string':
-                if len(parts) != 3:
-                    raise Exception('unexpected property specification: {}'.format(l_))
-                else:
-                    self.properties[parts[1]] = parts[2]
-
-            elif descriptor == 'vector':
-                if len(parts) != 6:
-                    raise Exception('unexpected vector property specification: {}'.format(l_))
-                else:
-                    self.properties[parts[1]] = (parts[2], parts[3], parts[4], parts[5])
-
-            else:
-                raise Exception('unexpected material line: {}'.format(l_))
-
-
 MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = {
-    'texture-handling': {
-        'method': str,
-        'dest-dir': Directory
+    'texture-conversion': {
+        'format': ['png', 'jpg', 'leave-as-is']
     },
-    'skip-shadowbones': bool,
+    'skip-nodes': {
+        'if-name-contains': list,
+        'of-type': list
+    },
     'logging': {
         'level': str
     },
@@ -135,10 +37,12 @@ MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = {
 }
 
 MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS = {
-    'texture-handling': {
-        'method': 'with-file'
+    'texture-conversion': {
+        'format': 'png'
     },
-    'skip-shadowbones': True,
+    'skip-nodes': {
+        'if-name-contains': 'Shadowbone'
+    },
     'logging': {
         'level': 'INFO'
     },
@@ -180,16 +84,6 @@ class Mdb2FbxConverter:
 
     def error(self, msg):
         LOGGER.error(self._decorate_message(msg))
-
-    def _init_settings(self, settings: Settings):
-        self.settings \
-            .set('texture-handling.method', settings.get('texture-handling.method', 'with-fbx')) \
-            .set('skip-shadowbones', settings.get('skip-shadowbones', True)) \
-            .set('logging.level', settings.get('logging.level', logging.WARNING)) \
-            .set('unit-conversion-factor', settings.get('unit-conversion-factor', 100.0))
-
-        if settings.get('texture-handling.method') == 'dest-dir':
-            self.settings.set('texture-handling.dest-dir', settings.get('texture-handling.dest-dir'))
 
     def __init__(self, source: Resource, settings: Settings = Settings()):
         assert (source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)

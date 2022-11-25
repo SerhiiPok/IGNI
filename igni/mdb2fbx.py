@@ -24,14 +24,14 @@ MODULE_CLOSE_INTERCEPTOR = OnModuleClose()
 
 MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = {
     'texture-conversion': {
-        'format': ['png', 'jpg', 'leave-as-is']
+        'format': {'png', 'jpg', 'leave-as-is'}
     },
     'skip-nodes': {
         'if-name-contains': list,
         'of-type': list
     },
     'logging': {
-        'level': str
+        'level': {'DEBUG', 'INFO', 'WARN', 'ERROR'}
     },
     'unit-conversion-factor': float
 }

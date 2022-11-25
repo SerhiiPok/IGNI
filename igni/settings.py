@@ -8,20 +8,52 @@ class Settings:
     usage: TODO
     """
 
+    class PropertyPath:
+
+        @classmethod
+        def from_string(cls, str_path):
+            if str_path.startswith('.') or str_path.endswith('.'):
+                raise Exception('invalid property path {}'.format(str_path))
+            return cls(str_path.split('.'))
+
+        def __init__(self, parts):
+            if parts is None:
+                raise Exception('property path cannot be empty')
+            self.parts = parts
+
+        def __str__(self):
+            return self.parts.join('.')
+
+        def __hash__(self):
+            return hash(str(self))
+
+        def __add__(self, other):
+            if not isinstance(other, type(self)):
+                raise Exception('cannot add path to a non-path')
+            return type(self)(self.parts + other.parts)
+
+        def is_superpath_of(self, path):
+            if not isinstance(path, type(self)):
+                raise Exception('expected argument of type path')
+            if len(self.parts) > len(path.parts):
+                return False
+            else:
+                return all([path.parts[i] == self.parts[i] for i in range(0, len(self.parts))])
+
     def accept_tree(self, tree: dict):
 
         def flatten(dict_):
 
             props = {}
 
-            def recursive_tree_flatten(presumably_dict, cumulative_name):
+            def recursive_tree_flatten(presumably_dict, cumulative_path):
                 if isinstance(presumably_dict, dict):
                     certainly_dict = presumably_dict
                     for key in certainly_dict:
-                        recursive_tree_flatten(certainly_dict[key], cumulative_name + '.' + key)
+                        recursive_tree_flatten(certainly_dict[key], cumulative_path + [key])
                 else:
                     not_a_dict = presumably_dict
-                    props[cumulative_name] = not_a_dict
+                    props[self.PropertyPath(cumulative_path)] = not_a_dict
 
             for key in dict_:
                 recursive_tree_flatten(dict_[key], key)
@@ -61,50 +93,90 @@ class Settings:
         return property_name in self._props
 
     def get(self, property_name):
-        if property_name in self._props:
+
+        property_path = self.PropertyPath(property_name)
+        if property_path in self._props:
             return self._props[property_name]
         else:
-            raise Exception('missing required property "{}"'.format(property_name))
+            # try to return nested settings
+            nested_props = {nested_property_path: nested_property_value for
+                            nested_property_path, nested_property_value in self._props if
+                            property_path.is_superpath_of(nested_property_path)}
+            if len(nested_props) == 0:
+                raise Exception('missing required property "{}"'.format(property_name))
+
+            nested_type_hint_props = None
+            if self._type_hint is not None:
+                nested_type_hint_props = {
+                    nested_property_path: nested_property_value for
+                    nested_property_path, nested_property_value in self._type_hint._props
+                    if nested_property_path in nested_props
+                }
+
+            return Settings(nested_type_hint_props).accept_props(nested_props)
 
     def set(self, property_name, property_value):
+
+        property_path = self.PropertyPath(property_name)
+
+        if type(property_value) is Settings:
+            [self.set(property_path + nested_property_path, nested_property_value) for
+             nested_property_path, nested_property_value in property_value._props.items()]
+
+            if property_value._type_hint is not None:
+                if self._type_hint is None:
+                    self._type_hint = Settings()
+                [self._type_hint.set(property_path + nested_property_path, nested_property_value) for
+                 nested_property_path, nested_property_value in property_value._type_hint._props.items()]
+
         if self._type_hint is None \
-                or self._type_hint._props.get(property_name, None) is None \
-                or self._type_hint._props[property_name] is type(property_value):
-            self._props[property_name] = property_value
+                or self._type_hint._props.get(property_path, None) is None \
+                or self._type_hint._props[property_path] is type(property_value):  # < is already of desired type
+            self._props[property_path] = property_value
             return
 
         # discrepancy in hinted type and type of supplied value --> try to convert to hinted type
-        _hint_type = self._type_hint._props[property_name]
+        _hint_type = self._type_hint._props[property_path]
+
+        '''
+        special handling required for the following types:
+        - bool
+        - set (enum values are specified)
+        - list
+        '''
 
         # only a set of values allowed
         if isinstance(_hint_type, set):
             if property_value not in _hint_type:
-                raise Exception('value "{}" is not allowed for property "{}"'.format(property_value, property_name))
+                raise Exception('value "{}" is not allowed for property "{}". '.format(property_value, property_path) +
+                                'allowed values: {}'.format(_hint_type))
             else:
-                self._props[property_name] = property_value
+                self._props[property_path] = property_value
 
         # boolean also needs special handling
         elif _hint_type is bool:
             if type(property_value) is str:
                 if property_value.lower() in ['yes', 'y', '1', 'true', 't']:
-                    self._props[property_name] = True
+                    self._props[property_path] = True
                 elif property_value.lower() in ['no', 'n', '0', 'false', 'f']:
-                    self._props[property_name] = False
+                    self._props[property_path] = False
                 else:
                     raise Exception('cannot parse boolean value "{}" for property "{}"'.format(
                         property_value,
-                        property_name
+                        property_path
                     ))
             else:
-                self._props[property_name] = bool(property_value)
+                self._props[property_path] = bool(property_value)
 
         # some other combination of types that are not equal
         else:
             try:
-                self._props[property_name] = _hint_type(property_value)
+                self._props[property_path] = _hint_type(property_value)
             except Exception as e:
                 raise Exception('could not convert property value "{}" to type required "{}" for property "{}"'.format(
                     property_value,
                     _hint_type,
-                    property_name
+                    property_path
                 ))
+
+        return self

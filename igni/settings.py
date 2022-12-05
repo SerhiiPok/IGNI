@@ -41,13 +41,30 @@ class Settings(dict):
         try:
             return super().__getitem__(key)
         except KeyError:
-            raise Exception('missing required property "{}"'.format(key))
+            raise KeyError('missing required property "{}"'.format(key))
 
     def __get_type_hint_else_empty__(self):
         if self.type_hint is None:
             return {}
         else:
             return self.type_hint
+
+    def get(self, key, **kwargs):
+        property_path = key.split('.')
+        result = self
+
+        try:
+            for key in property_path:
+                if type(result) is not type(self):
+                    raise KeyError('property "{}" does not exist'.format(key))
+                result = result[key]
+        except KeyError as ke:
+            if 'default' in kwargs:
+                return kwargs['default']
+            else:
+                raise ke
+
+        return result
 
     def use_type_hint(self, type_hint):
 

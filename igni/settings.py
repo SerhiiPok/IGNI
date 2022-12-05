@@ -1,182 +1,110 @@
 import yaml
 
 
-class Settings:
+def force_type(type_hint, prop_value):
 
-    """
-    this is a utility class for settings
-    usage: TODO
-    """
+    # only a subset of values allowed
+    if isinstance(type_hint, set):
+        allowed_set = type_hint
+        if prop_value not in allowed_set:
+            raise ValueError('value not in set of allowed values')
+        else:
+            return prop_value
 
-    class PropertyPath:
-
-        @classmethod
-        def from_string(cls, str_path):
-            if str_path.startswith('.') or str_path.endswith('.'):
-                raise Exception('invalid property path {}'.format(str_path))
-            return cls(str_path.split('.'))
-
-        def __init__(self, parts):
-            if parts is None:
-                raise Exception('property path cannot be empty')
-            self.parts = parts
-
-        def __str__(self):
-            return self.parts.join('.')
-
-        def __hash__(self):
-            return hash(str(self))
-
-        def __add__(self, other):
-            if not isinstance(other, type(self)):
-                raise Exception('cannot add path to a non-path')
-            return type(self)(self.parts + other.parts)
-
-        def is_superpath_of(self, path):
-            if not isinstance(path, type(self)):
-                raise Exception('expected argument of type path')
-            if len(self.parts) > len(path.parts):
+    # boolean also needs special handling
+    elif type_hint is bool:
+        if type(prop_value) is str:
+            if prop_value.lower() in ['yes', 'y', '1', 'true', 't']:
+                return True
+            elif prop_value.lower() in ['no', 'n', '0', 'false', 'f']:
                 return False
             else:
-                return all([path.parts[i] == self.parts[i] for i in range(0, len(self.parts))])
-
-    def accept_tree(self, tree: dict):
-
-        def flatten(dict_):
-
-            props = {}
-
-            def recursive_tree_flatten(presumably_dict, cumulative_path):
-                if isinstance(presumably_dict, dict):
-                    certainly_dict = presumably_dict
-                    for key in certainly_dict:
-                        recursive_tree_flatten(certainly_dict[key], cumulative_path + [key])
-                else:
-                    not_a_dict = presumably_dict
-                    props[self.PropertyPath(cumulative_path)] = not_a_dict
-
-            for key in dict_:
-                recursive_tree_flatten(dict_[key], key)
-
-            return props
-
-        return self.accept_props(flatten(tree))
-
-    def accept_props(self, props: dict):
-        [self.set(prop_name, prop_val) for prop_name, prop_val in props.items()]
-        return self
-
-    def accept_yaml(self, path: str):
-        return self.accept_tree(yaml.load(path))
-
-    def accept_cmd_args(self, cmd_args: list):
-        for cmd_arg in cmd_args:
-            key_and_val = cmd_arg.split('=')
-            if len(key_and_val) != 2:
-                raise Exception('invalid command line setting: "{}"'.format(cmd_arg))
-
-            key = key_and_val[0]
-            while key.startswith('-'):
-                key = key[1:]
-
-            val = key_and_val[1]
-
-            self.set(key, val)
-
-        return self
-
-    def __init__(self, type_hint=None):
-        self._type_hint = type_hint
-        self._props = {}
-
-    def has(self, property_name):
-        return property_name in self._props
-
-    def get(self, property_name):
-
-        property_path = self.PropertyPath(property_name)
-        if property_path in self._props:
-            return self._props[property_name]
+                raise ValueError('cannot parse boolean value from string "{}"'.format(prop_value))
         else:
-            # try to return nested settings
-            nested_props = {nested_property_path: nested_property_value for
-                            nested_property_path, nested_property_value in self._props if
-                            property_path.is_superpath_of(nested_property_path)}
-            if len(nested_props) == 0:
-                raise Exception('missing required property "{}"'.format(property_name))
+            return bool(prop_value)
 
-            nested_type_hint_props = None
-            if self._type_hint is not None:
-                nested_type_hint_props = {
-                    nested_property_path: nested_property_value for
-                    nested_property_path, nested_property_value in self._type_hint._props
-                    if nested_property_path in nested_props
-                }
+    # some other combination of types that are not equal
+    else:
+        try:
+            return type_hint(prop_value)
+        except Exception as e:
+            raise ValueError('error while trying to convert from "{}" to "{}"'.format(type(prop_value), type_hint))
 
-            return Settings(nested_type_hint_props).accept_props(nested_props)
 
-    def set(self, property_name, property_value):
+class Settings(dict):
 
-        property_path = self.PropertyPath(property_name)
+    def __init__(self, data={}):
+        super().__init__()
+        self.read_dict(data)
 
-        if type(property_value) is Settings:
-            [self.set(property_path + nested_property_path, nested_property_value) for
-             nested_property_path, nested_property_value in property_value._props.items()]
+    def __getitem__(self, key):
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            raise Exception('missing required property "{}"'.format(key))
 
-            if property_value._type_hint is not None:
-                if self._type_hint is None:
-                    self._type_hint = Settings()
-                [self._type_hint.set(property_path + nested_property_path, nested_property_value) for
-                 nested_property_path, nested_property_value in property_value._type_hint._props.items()]
-
-        if self._type_hint is None \
-                or self._type_hint._props.get(property_path, None) is None \
-                or self._type_hint._props[property_path] is type(property_value):  # < is already of desired type
-            self._props[property_path] = property_value
-            return
-
-        # discrepancy in hinted type and type of supplied value --> try to convert to hinted type
-        _hint_type = self._type_hint._props[property_path]
-
-        '''
-        special handling required for the following types:
-        - bool
-        - set (enum values are specified)
-        - list
-        '''
-
-        # only a set of values allowed
-        if isinstance(_hint_type, set):
-            if property_value not in _hint_type:
-                raise Exception('value "{}" is not allowed for property "{}". '.format(property_value, property_path) +
-                                'allowed values: {}'.format(_hint_type))
-            else:
-                self._props[property_path] = property_value
-
-        # boolean also needs special handling
-        elif _hint_type is bool:
-            if type(property_value) is str:
-                if property_value.lower() in ['yes', 'y', '1', 'true', 't']:
-                    self._props[property_path] = True
-                elif property_value.lower() in ['no', 'n', '0', 'false', 'f']:
-                    self._props[property_path] = False
-                else:
-                    raise Exception('cannot parse boolean value "{}" for property "{}"'.format(
-                        property_value,
-                        property_path
-                    ))
-            else:
-                self._props[property_path] = bool(property_value)
-
-        # some other combination of types that are not equal
+    def __get_type_hint_else_empty__(self):
+        if self.type_hint is None:
+            return {}
         else:
-            try:
-                self._props[property_path] = _hint_type(property_value)
-            except Exception as e:
-                raise Exception('could not convert property value "{}" to type required "{}" for property "{}"'.format(
-                    property_value,
-                    _hint_type,
-                    property_path
-                ))
+            return self.type_hint
+
+    def use_type_hint(self, type_hint):
+
+        def recursive_force_type_hint(settings, type_hint):
+            SETTINGS = type(self)
+
+            if settings is None or type_hint is None or len(settings) == 0 or len(type_hint) == 0:
+                return
+            for key in type_hint:
+                if key not in settings:
+                    return
+                if type(settings[key]) is SETTINGS and type(type_hint[key]) is SETTINGS:
+                    recursive_force_type_hint(settings[key], type_hint[key])
+                elif type(settings[key]) is not SETTINGS and type(type_hint[key]) is not SETTINGS:
+                    settings[key] = force_type(type_hint[key], settings[key])
+
+        recursive_force_type_hint(self, type_hint)
+
+    def read_dict(self, dict_: dict):
+        for key in dict_.keys():
+            if isinstance(dict_[key], dict):
+                if key in self and isinstance(self[key], type(self)):
+                    self[key].read_dict(dict_[key])
+                else:
+                    self[key] = type(self)(dict_[key])
+            else:
+                self[key] = dict_[key]
 
         return self
+
+    def read_props(self, props: dict):
+        deep_from_shallow = {}
+
+        for key in props:
+            parts = key.split('.')
+
+            if len(parts) == 1:
+                deep_from_shallow[parts[0]] = props[key]
+                continue
+
+            current_level = deep_from_shallow.get(parts[0], None)
+            if current_level is None:
+                deep_from_shallow[parts[0]] = {}
+                current_level = deep_from_shallow[parts[0]]
+
+            for part in parts[1:len(parts)-1]:
+                if part not in current_level:
+                    current_level[part] = {}
+                current_level = current_level[part]
+
+            current_level[parts[len(parts)-1]] = props[key]
+
+        return self.read_dict(deep_from_shallow)
+
+    def read_cmd_args(self, cmd_args):
+        return self.read_props({arg_name: arg_val for arg_name, arg_val in [cmd_arg.split('=') for cmd_arg in cmd_args]})
+
+    def read_yaml(self, path):
+        with open(path, 'r') as stream:
+            return self.read_dict(yaml.safe_load(stream))

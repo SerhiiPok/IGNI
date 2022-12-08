@@ -67,11 +67,11 @@ class Trimesh:
 
     def _init_data(self):
 
-        self.vertices = ((v.x, v.y, v.z) for v in self.trimesh.vertices.data)
-        self.faces = ((f.vert1, f.vert2, f.vert3) for f in self.trimesh.faces.data)
-        self.normals = ((n.x, n.y, n.z) for n in self.trimesh.normals.data)
-        self.binormals = ((b.x, b.y, b.z) for b in self.trimesh.binormals.data)
-        self.tangents = ((t.x, t.y, t.z) for t in self.trimesh.tangents.data)
+        self.vertices = tuple((v.x, v.y, v.z) for v in self.trimesh.vertices.data)
+        self.faces = tuple((f.vert1, f.vert2, f.vert3) for f in self.trimesh.faces.data)
+        self.normals = tuple((n.x, n.y, n.z) for n in self.trimesh.normals.data)
+        self.binormals = tuple((b.x, b.y, b.z) for b in self.trimesh.binormals.data)
+        self.tangents = tuple((t.x, t.y, t.z) for t in self.trimesh.tangents.data)
 
         for i in range(0, 4):
             uv_array_pointer = self.trimesh.uvs[i]

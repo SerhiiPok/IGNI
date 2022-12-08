@@ -62,6 +62,7 @@ types:
           cases:
             '"vertex"': vertex
             '"normal"': normal
+            '"vector3ofs2"': vector3ofs2
             '"face"': face
             '"uv"': uv
             '"f4"': f4
@@ -113,6 +114,14 @@ types:
         type: f4
       - id: z
         type: f4
+  vector3ofs2:
+    seq:
+      - id: x
+        type: s2
+      - id: y
+        type: s2
+      - id: z
+        type: s2
   normal:
     seq:
       - id: x
@@ -390,9 +399,9 @@ types:
       - id: normals
         type: array_ptr('normal', 32)
       - id: tangents
-        type: array_ptr('tangent', 32)
+        type: array_ptr('vector3ofs2', 32)
       - id: binormals
-        type: array_ptr('binormals', 32)
+        type: array_ptr('vector3ofs2', 32)
       - id: uvs
         type: array_ptr('uv', 32)
         repeat: expr

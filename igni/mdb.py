@@ -43,6 +43,19 @@ class Mdb(KaitaiStruct):
     def _read(self):
         self.header = Mdb.Header(self._io, self, self._root)
 
+    class Vector3ofs2(KaitaiStruct):
+        def __init__(self, _io, _parent=None, _root=None):
+            self._io = _io
+            self._parent = _parent
+            self._root = _root if _root else self
+            self._read()
+
+        def _read(self):
+            self.x = self._io.read_s2le()
+            self.y = self._io.read_s2le()
+            self.z = self._io.read_s2le()
+
+
     class Uv(KaitaiStruct):
         def __init__(self, _io, _parent=None, _root=None):
             self._io = _io
@@ -254,8 +267,8 @@ class Mdb(KaitaiStruct):
             self.unknown_11 = self._io.read_bytes(4)
             self.vertices = Mdb.ArrayPtr(u"vertex", 32, self._io, self, self._root)
             self.normals = Mdb.ArrayPtr(u"normal", 32, self._io, self, self._root)
-            self.tangents = Mdb.ArrayPtr(u"tangent", 32, self._io, self, self._root)
-            self.binormals = Mdb.ArrayPtr(u"binormals", 32, self._io, self, self._root)
+            self.tangents = Mdb.ArrayPtr(u"vector3ofs2", 32, self._io, self, self._root)
+            self.binormals = Mdb.ArrayPtr(u"vector3ofs2", 32, self._io, self, self._root)
             self.uvs = []
             for i in range(4):
                 self.uvs.append(Mdb.ArrayPtr(u"uv", 32, self._io, self, self._root))
@@ -478,6 +491,8 @@ class Mdb(KaitaiStruct):
                     self._m_data.append(Mdb.Uv(self._io, self, self._root))
                 elif _on == u"face":
                     self._m_data.append(Mdb.Face(self._io, self, self._root))
+                elif _on == u"vector3ofs2":
+                    self._m_data.append(Mdb.Vector3ofs2(self._io, self, self._root))
                 else:
                     self._m_data.append(Mdb.UnknownType(self._io, self, self._root))
 

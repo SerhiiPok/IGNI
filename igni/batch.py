@@ -1,76 +1,89 @@
+import sys
 import mdb2fbx
 from .resources import Directory, ResourceType, ResourceManager, ResourceTypes, Resource
 from .settings import Settings
 from .mdb2fbx import Mdb2FbxConverter
 
-MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = {
+MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
     'exporter': mdb2fbx.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
     'input': {
         'path': Directory,
         'exclude-files': {
-            'starting-with': str,
-            'ending-with': str,
-            'containing': str
+            'starting-with': list,
+            'ending-with': list,
+            'containing': list
         },
         'include-files': {
-            'starting-with': str,
-            'ending-with': str,
-            'containing': str
+            'starting-with': list,
+            'ending-with': list,
+            'containing': list
         }
     },
     'logging': {
         'level': str
     },
     'destination': {
-        'root': Directory,
         'model': {
-            'type': ['single-destination', 'by-prefix', 'folder-per-model'],
-            'prefix-settings': dict,
-            'destination': Directory
+            'destination': Directory,
+            'organization': {'all-in-one-place', 'by-prefix', 'folder-per-model', 'custom'},
+            'prefix-settings': dict  # only if type is 'by-prefix'
         },
         'animation': {
-            'type': ['single-destination', 'by-prefix', 'with-model'],
-            'prefix-settings': dict,
-            'destination': Directory
+            'destination': Directory,  # required if 'single-destination' or 'by-prefix' are chosen
+            'organization': {'all-in-one-place', 'by-prefix', 'with-model'},
+            'prefix-settings': dict
         },
         'texture': {
-            'type': ['single-destination', 'with-model'],
-            'prefix-settings': dict,
-            'destination': Directory
+            'destination': Directory,  # only required if organization is 'single-destination'
+            'organization': {'single-destination', 'with-model'},
+            'prefix-settings': dict
         }
     }
-}
+})
 
-MDB_2_FBX_BATCH_DEFAULT_SETTINGS = {
+MDB_2_FBX_BATCH_DEFAULT_SETTINGS = Settings({
     'exporter': mdb2fbx.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS
-}
+})
 
 
 class Mdb2FbxBatch:
 
-    def __filter_collection_if_filter_exists__(self, property_name, filter_function, exclude = False):
-        full_property_path = 'input.exclude-files.' + property_name if exclude else 'input.include-files.' + property_name
-        if self.settings.has(full_property_path):
-            self.collection = [resource for resource in self.collection if filter_function(
-                resource, self.settings.get(full_property_path)
-            )]
-
     def __init__(self, settings: Settings = Settings()):
         self.settings = settings
 
-        resource_manager = ResourceManager(self.settings.get('input.path'))
-        self.collection = resource_manager.get_all_of_type(ResourceTypes.MDB, ResourceTypes.MBA)
+        resource_manager = ResourceManager(self.settings['input']['path'])
 
-        FILTER_SPECIFICATION = {
-            'starting-with': lambda resource, value: resource.file.name.startswith(value),
-            'ending-with': lambda resource, value: resource.file.name.endswith(value),
-            'containing': lambda resource, value: value in resource.file.name
-        }
+        def get_item_filter(batch):
 
-        if self.settings.has('input.include-files'):
-            [self.__filter_collection_if_filter_exists__(a[0], a[1]) for a in FILTER_SPECIFICATION.items()]
-        elif self.settings.has('input.exclude-files'):
-            [self.__filter_collection_if_filter_exists__(a[0], a[1], True) for a in FILTER_SPECIFICATION.items()]
+            checks = {'positive': [], 'negative': []}
+
+            filters = [
+                ('input.exclude-files.starting-with', 'negative', lambda x, y: x.startswith(y)),
+                ('input.exclude-files.ending-with', 'negative', lambda x, y: x.endswith(y)),
+                ('input.exclude-files.containing', 'negative', lambda x, y: y in x),
+                ('input.include-files.starting-with', 'positive', lambda x, y: x.startswith(y)),
+                ('input.include-files.ending-with', 'positive', lambda x, y: x.endswith(y)),
+                ('input.include-files.containing', 'positive', lambda x, y: y in x)
+            ]
+
+            for filter_spec in filters:
+                filter_input_list = batch.settings.get(filter_spec[0], None)
+                if filter_input_list is not None:
+                    checks[filter_spec[1]].append(
+                        lambda rsrc: any([filter_spec[2](rsrc.file.name, word) for word in filter_input_list]))
+
+            def do_filter(resource):
+                if not all([check(resource) for check in checks['positive']]):
+                    return False
+
+                if any([check(resource) for check in checks['negative']]):
+                    return False
+
+                return True
+
+            return do_filter
+
+        self.collection = resource_manager.get_all_of_type((ResourceTypes.MDB, ResourceTypes.MBA), get_item_filter(self))
 
     def _find_in_collection_by_name_root_and_resource_type(self, name_root: str, resource_type: ResourceType):
         found_items = [resource for resource in self.collection if name_root == resource.file.name_root]
@@ -139,6 +152,17 @@ class Mdb2FbxBatch:
 
     def run(self):
         for resource in self.collection:
-            converter = Mdb2FbxConverter(resource, self.settings.get('exporter'))
+            converter = Mdb2FbxConverter(resource, self.settings['exporter'])
             destination_folder, texture_destination_folder = self._find_destination_folder(resource)
-            converter.convert_and_export(destination_folder, texture_destination_folder)
+            converter.convert_and_export(destination_folder)  # TODO implement texture destination folder
+
+
+if __name__ == '__main__':
+    args = sys.argv
+    batch_name = args[1]
+    config_path = args[2]
+
+    if batch_name == 'mdb2fbx':
+        Mdb2FbxBatch(Settings.read_yaml(config_path)).run()
+    else:
+        raise Exception('batch name "{}" is unknown'.format(batch_name))

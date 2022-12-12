@@ -279,8 +279,23 @@ class ResourceManager:
         self.root_directory = Directory(root_dir)
         self.files = self.root_directory.collect_files()
 
-    def get_all_of_type(self, resource_type: ResourceType, filterer=None):
-        resources = [Resource(file, resource_type) for file in self.files if resource_type.validate(file)]
+    def get_all_of_type(self, resource_types, filterer=None):
+
+        resources = []
+
+        def validate_then_create(file: File, resource_types_):
+            if not isinstance(resource_types_, tuple):
+                resource_types_ = tuple(resource_types_)
+            for resource_type in resource_types_:
+                if resource_type.validate(file):
+                    return Resource(file, resource_type)
+            return None
+
+        for file in self.files:
+            resource = validate_then_create(file, resource_types)
+            if resource is not None:
+                resources.append(resource)
+
         if filterer is not None:
             resources = [resource for resource in resources if filterer(resource)]
         return resources

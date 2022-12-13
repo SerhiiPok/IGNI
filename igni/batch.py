@@ -1,4 +1,7 @@
 import sys
+
+import yaml
+
 import mdb2fbx
 from .resources import Directory, ResourceType, ResourceManager, ResourceTypes, Resource
 from .settings import Settings
@@ -164,10 +167,14 @@ class Mdb2FbxBatch:
 
 if __name__ == '__main__':
     args = sys.argv
-    batch_name = args[1]
-    config_path = args[2]
+    config_path = args[1]
 
-    if batch_name == 'mdb2fbx':
-        Mdb2FbxBatch(Settings.read_yaml(config_path)).run()
-    else:
-        raise Exception('batch name "{}" is unknown'.format(batch_name))
+    with open(config_path, 'r') as stream:
+        batch_input = yaml.safe_load(stream)
+
+        for batch_definition in batch_input['batch']:
+
+            if batch_definition['name'] == 'mdb2fbx':
+                Mdb2FbxBatch(Settings(batch_definition['settings'])).run()
+            else:
+                raise Exception('unknown batch job type')

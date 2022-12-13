@@ -1,22 +1,26 @@
-exporter:
-  texture-conversion: leave-as-is
-  skip-nodes:
-    if-name-contains:
-      - Shadowbone
-      - shadowbone
-  logging:
-    level: DEBUG
-  unit-conversion-factor: 100.0
-input:
-  path: path-to-witcher-unbiffed-contents-here
-logging:
-  level: DEBUG
-destination:
-  model:
-    destination: path-to-model-directories-here
-    organization: all-in-one-place
-  animation:
-    destination: path-to-animation-directory-here
-    organization: all-in-one-place
-  texture:
-    organization: with-model
+batch:
+
+  - type: mdb2fbx
+    settings:
+      exporter:
+        texture-conversion: leave-as-is
+        skip-nodes:
+          if-name-contains:
+            - Shadowbone
+            - shadowbone
+        logging:
+          level: DEBUG
+        unit-conversion-factor: 100.0
+      input:
+        path: path-to-witcher-unbiffed-contents-here
+      logging:
+        level: DEBUG
+      destination:
+        model:
+          destination: path-to-model-directories-here
+          organization: all-in-one-place
+        animation:
+          destination: path-to-animation-directory-here
+          organization: all-in-one-place
+        texture:
+          organization: with-model

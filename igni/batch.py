@@ -20,7 +20,7 @@ MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
         }
     },
     'logging': {
-        'level': str
+        'level': {'DEBUG', 'INFO', 'WARN', 'ERROR'}
     },
     'destination': {
         'model': {

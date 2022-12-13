@@ -95,6 +95,8 @@ class Directory:
         self._dir_contents = None
         self._files = None  # of type _FilePath, lazy, caching
         self._subdirectories = None  # of type _Directory, lazy, caching
+        self.lazy = False
+        self.name = os.path.basename(self.full_path)
 
     def __str__(self):
         return self.full_path
@@ -111,19 +113,15 @@ class Directory:
 
     @property
     def files(self):
-        if self._files is None:
+        if (self.lazy and self._files is None) or (not self.lazy):
             self._init_data_()
-            return self._files
-        else:
-            return self._files
+        return self._files
 
     @property
     def subdirectories(self):
-        if self._subdirectories is None:
+        if (self.lazy and self._subdirectories is None) or (not self.lazy):
             self._init_data_()
-            return self._subdirectories
-        else:
-            return self._subdirectories
+        return self._subdirectories
 
     def collect_files(self):
         results = []
@@ -172,6 +170,11 @@ class Directory:
 
     def list_extensions(self):
         return list(set([filepath.extension for filepath in self.files]))
+
+    def create_subdirectory(self, subdir_name):
+        p = os.path.join(self.full_path, subdir_name)
+        os.mkdir(p)
+        return Directory(p)
 
 
 class ResourceType:

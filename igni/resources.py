@@ -173,7 +173,8 @@ class Directory:
 
     def create_subdirectory(self, subdir_name):
         p = os.path.join(self.full_path, subdir_name)
-        os.mkdir(p)
+        if not os.path.exists(p):
+            os.mkdir(p)
         return Directory(p)
 
 

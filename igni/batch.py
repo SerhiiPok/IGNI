@@ -26,7 +26,8 @@ MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
         'model': {
             'destination': Directory,
             'organization': {'all-in-one-place', 'by-prefix', 'folder-per-model', 'custom'},
-            'prefix-settings': dict  # only if type is 'by-prefix'
+            'prefix-settings': dict,  # only if type is 'by-prefix'
+            'custom': None
         },
         'animation': {
             'destination': Directory,  # required if 'single-destination' or 'by-prefix' are chosen
@@ -35,7 +36,7 @@ MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
         },
         'texture': {
             'destination': Directory,  # only required if organization is 'single-destination'
-            'organization': {'single-destination', 'with-model'},
+            'organization': {'all-in-one-place', 'with-model'},
             'prefix-settings': dict
         }
     }
@@ -98,55 +99,59 @@ class Mdb2FbxBatch:
         destination_folder = None
         texture_destination_folder = None
 
-        common_root = None
-        if self.settings.has('destination.root'):
-            common_root = self.settings.get('destination.root')
-
-        def _consider_root(path):
-            dir_ = None
-            try:
-                dir_ = Directory(path)
-            except Exception as e:
-                dir_ = common_root + path
-            return dir_
-
         if resource.resource_type == ResourceTypes.MDB:
 
-            # file destination
-            model_destination_type = self.settings.get('destination.model.type')
-            if model_destination_type == 'single-destination':
-                destination_folder = self.settings.get('destination.model.destination')
-            elif model_destination_type == 'by-prefix':
-                destination_folder = \
-                    _consider_root(
-                        self.settings.get('destination.model.prefix-settings')[resource.file.name_prefix])
-            else:
-                raise Exception('destination type {} is not recognized'.format(model_destination_type))
+            model_destination_settings: Settings = self.settings['destination']['model']
+            texture_destination_settings: Settings = self.settings['destination']['texture']
 
-            # texture files destination
-            texture_destination_type = self.settings.get('destination.texture.type')
-            if texture_destination_type == 'single-destination':
-                texture_destination_folder = self.settings.get('destination.texture.destination')
-            elif texture_destination_type == 'with-model':
+            # --- resolve model destination folder
+            model_destination: Directory = model_destination_settings['destination']
+            model_organization = model_destination_settings.get('organization', default='all-in-one-place')
+
+            if model_organization == 'all-in-one-place':
+                destination_folder = model_destination
+            elif model_organization == 'by-prefix':  # folder for this prefix under destination folder
+                destination_folder = model_destination.create_subdirectory(
+                    model_destination_settings['prefix-settings'].get(resource.file.name_prefix, 'unassigned')
+                )
+            elif model_organization == 'folder-per-model':
+                destination_folder = model_destination.create_subdirectory(resource.file.name)
+            elif model_organization == 'custom':
+                destination_folder = model_destination_settings['custom'](resource)
+            else:
+                raise Exception('this destination folder organization is not known')
+
+            # --- resolve texture files destination folder
+            texture_organization = texture_destination_settings['organization']
+
+            if texture_organization == 'all-in-one-place':
+                texture_destination_folder = texture_destination_settings['destination']
+            elif texture_organization == 'with-model':
                 texture_destination_folder = destination_folder
             else:
-                raise Exception('texture destination type {} is not recognized'.format(texture_destination_type))
+                raise Exception('this destination folder organization is not known')
 
         elif resource.resource_type == ResourceType.MBA:
 
-            animation_destination_type = self.settings.get('destination.animation.type')
-            if animation_destination_type == 'with-model':
+            animation_destination_settings = self.settings['destination']['animation']
+
+            animation_organization = animation_destination_settings['organization']
+
+            if animation_organization == 'with-model':
                 find_in_collection = self._find_in_collection_by_name_root_and_resource_type(resource.file.name_root,
                                                                                              ResourceTypes.MDB)
                 if find_in_collection is not None:
                     destination_folder = self._find_destination_folder(find_in_collection)
                 else:
                     raise Exception('no model found for animation {} to save with'.format(resource.file.name))
-            elif animation_destination_type == 'single-destination':
-                destination_folder = self.settings.get('destination.animation.destination')
+            elif animation_organization == 'by-prefix':
+                destination_folder = animation_destination_settings['destination'].create_subdirectory(
+                    animation_destination_settings['prefix-settings'].get(resource.file.name_prefix, 'unassigned')
+                )
+            elif animation_organization == 'all-in-one-place':
+                destination_folder = animation_destination_settings['destination']
             else:
-                raise Exception(
-                    'animation destination type {} is not recognized'.format(animation_destination_type))
+                raise Exception('this destination folder organization is not known')
 
         return destination_folder, texture_destination_folder
 

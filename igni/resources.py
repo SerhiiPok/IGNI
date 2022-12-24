@@ -112,6 +112,10 @@ class Directory:
         self._subdirectories = [FILE_SYSTEM.get_directory(Directory(f)) for f in self._dir_contents if os.path.isdir(f)]
 
     @property
+    def parent(self):
+        return Directory(os.path.abspath(os.path.join(self.full_path, os.pardir)))
+
+    @property
     def files(self):
         if (self.lazy and self._files is None) or (not self.lazy):
             self._init_data_()

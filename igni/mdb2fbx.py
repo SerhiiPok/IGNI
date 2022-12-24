@@ -29,76 +29,104 @@ MODULE_CLOSE_INTERCEPTOR = OnModuleClose()
 
 class TextureLocatorService:
 
-    @classmethod
-    def locate(cls, resource: Resource, texture_name: str):  # TODO
-        loc_dir = resource.file.location
+    """
+    this class locates a texture by its name by means of searching specific folders in game contents
+    """
 
-        candidates = [file for file in loc_dir.files if texture_name == file.name]
+    def __init__(self, mdb2fbx_converter_reference):
+        self.converter = mdb2fbx_converter_reference
+        self.resource_location_directory = mdb2fbx_converter_reference.source.file.location
+        self.logger = mdb2fbx_converter_reference.mdb2fbx_logger
+
+    def locate(self, texture_name: str):  # TODO
+
+        candidates = [file for file in self.resource_location_directory.files if texture_name == file.name]
 
         # try searching texture folders under parent if nothing found else look in surroundings
         if len(candidates) == 0:
-            first_priority_folders = [subdir for subdir in loc_dir.parent.subdirectories if 'textures' in subdir.name] # TODO parent
-            second_priority_folders = [subdir for subdir in loc_dir.parent.subdirectories if 'textures' not in subdir.name]
+            first_priority_folders = [subdir for subdir in self.resource_location_directory.parent.subdirectories
+                                      if 'textures' in subdir.name]  # TODO parent
+            second_priority_folders = [subdir for subdir in self.resource_location_directory.parent.subdirectories
+                                       if 'textures' not in subdir.name]
 
         for folder in first_priority_folders + second_priority_folders:
             candidates = [file for file in folder.files if texture_name == file.name]
-            if len(candidates) == 0:
+            if len(candidates) != 0:
                 break
 
-        # TODO log properly
         if len(candidates) == 0:
+            self.logger.error('no texture with name "{}" found'.format(texture_name))
             return None
         elif len(candidates) == 1:
             return candidates[0]
         elif len(candidates) > 1:
-            logging.getLogger(cls.__name__).warning('located multiple textures with name "{}", choosing first'.format(texture_name))
+            self.logger.warn('located multiple textures for name "{}", choosing first'.format(texture_name))
             return candidates[0]
 
 
-class TextureConverter:
+class TextureConverterJob:
 
-    def __init__(self, inp):
-        self.logger = logging.getLogger(type(self).__name__)
+    """
+    this class handles the logic of conversion of textures from arbitrary formats into arbitrary formats
+    """
+
+    def __init__(self, mdb2fbx_converter_reference):
+        self.logger = mdb2fbx_converter_reference.mdb2fbx_logger
 
         if image is None:
-            self.logger.debug('could not create texture converter instance because "wand" dependency could not be imported.')
+            self.logger.error('could not create texture converter instance because wand is not properly installed')
             self.invalid = True
             return
 
-        if isinstance(inp, Resource):
-            inp = inp.file.full_path
-        elif isinstance(inp, File):
-            inp = inp.full_path
+        self.input_ = None
+        self.target_location_: Directory = None
+        self.target_fname_ = ''
+        self.target_format_ = ''
+        self.invalid = False
+
+    def input(self, input_path):
+        if isinstance(input_path, Resource):
+            inp = input_path.file.full_path
+        elif isinstance(input_path, File):
+            inp = input_path.full_path
 
         try:
-            self.input = image.Image(filename=inp)
+            self.input_ = image.Image(filename=inp)
         except Exception as e:
-            self.logger.debug('could not load input image "{}", error message: {}'.format(inp, e))
+            self.logger.error('could not load input image "{}", error message: {}'.format(inp, e))
             self.invalid = True
 
-        self.location: Directory = None
-        self.filename = ''
-        self.format = ''
-
-    def under(self, location: Directory):
-        self.location = location
         return self
 
-    def fname(self, fname):
-        self.filename = fname
+    def target_dir(self, location: Directory):
+        self.target_location_ = location
         return self
 
-    def convert(self, format):
-        output_path = os.path.join(self.location.full_path, self.filename + '.' + format)
+    def target_fname(self, fname):
+        self.target_fname_ = fname
+        return self
+
+    def target_format(self, format_: str):
+        self.target_format_ = format_
+        return self
+
+    def run(self):
+
+        if self.input is None or self.target_location_ is None \
+                or self.target_fname_ is None or len(self.target_fname_) == 0\
+                or self.target_format_ is None or len(self.target_format_) == 0:
+            self.logger.error("can't execute texture conversion job with incomplete description")
+            self.invalid = True
+
+        if self.invalid:
+            return
+
+        output_path = os.path.join(self.target_location_.full_path, self.target_fname_ + '.' + self.target_format_)
+
         try:
-            self.input.save(filename=output_path)
+            self.input_.save(filename=output_path)
         except Exception as e:
             self.logger.error('could not write image: {}'.format(e))
-
-        try:
-            return File(output_path)
-        except Exception as e:
-            self.logger.error('texture was not written: {}'.format(e))
 
 
 class Mdb2FbxConverterLogger:
@@ -211,14 +239,25 @@ class Mdb2FbxConverter:
         self.mdb2fbx_logger = Mdb2FbxConverterLogger(self.source.file)
         self.mdb2fbx_logger.logger.setLevel(self.settings['logging']['level'])
 
-    def _build_fbx_material(self, fbx_material: fbx.FbxSurfacePhong, mdb_material: Material):
-        # for the moment, simply export textures, logic will come later
-        self.mdb2fbx_logger.warn('only texture files will be exported when writing materials, converting to fbx materials not yet implemented')
+        self.texture_locator_service = TextureLocatorService(self)
 
-        for texture in list(mdb_material.textures.values()) + list(mdb_material.bumpmaps.values()):
-            file = TextureLocatorService.locate(self.source, texture)
+    def _build_fbx_material(self, fbx_material: fbx.FbxSurfacePhong, mdb_material: Material):
+
+        """
+        material conversion being complex topic, this function represents a simplistic approach to texture conversion
+        """
+
+        if mdb_material is None:
+            self.mdb2fbx_logger.debug('material is None, hence nothing to export')
+            return
+
+        for texture_name in list(mdb_material.textures.values()) + list(mdb_material.bumpmaps.values()):
+            file = self.texture_locator_service.locate(texture_name)
             if file is not None:
-                self.texture_export_jobs.append(TextureConverter(file).fname(texture))
+                self.texture_export_jobs.append(TextureConverterJob(self).
+                                                input(file).
+                                                target_fname(texture_name).
+                                                target_format(self.settings['texture-conversion']['format']))
 
     def _build_fbx_mesh(self, fbx_mesh: fbx.FbxMesh, trimesh: Trimesh):
 
@@ -261,10 +300,16 @@ class Mdb2FbxConverter:
         # do translation, rotation, etc.
         if source_node.node_type == Mdb.NodeType.trimesh or \
                 source_node.node_type == Mdb.NodeType.skin:
+
+            # --- geometry
             mesh = fbx.FbxMesh.Create(fbx_scene, '')
             fbx_node.AddNodeAttribute(mesh)
             self._build_fbx_mesh(mesh,
                                  Trimesh(source_node.node_data))
+
+            # --- materials
+            self._build_fbx_material(None, Material(source_node.node_data.material.data))
+
         else:
             self.mdb2fbx_logger.debug('this node type is not handled')
 
@@ -320,7 +365,7 @@ class Mdb2FbxConverter:
     def convert_and_export(self, destination: Directory, texture_destination: Directory):
         fbx_scene = self.convert()
         self._export(fbx_scene, destination.full_path)
-        [job.under(texture_destination).convert(self.settings['texture-conversion']['format']) for job in self.texture_export_jobs]
+        [job.target_dir(texture_destination).run() for job in self.texture_export_jobs]
         fbx_scene.Destroy()
 
 
@@ -329,13 +374,14 @@ if __name__ == '__main__':
 
     src = Resource(File(args[1]))
     dest = Directory(args[2])
+    texture_dest = Directory(args[3])
     settings = Settings()
 
-    if len(args) > 3 and args[3].startswith('config='):
+    if len(args) > 4 and args[4].startswith('config='):
         # use yaml config
-        path_to_yaml = args[3].split('=')[1]
+        path_to_yaml = args[4].split('=')[1]
         settings.read_yaml(path_to_yaml)
-    elif len(args) > 3:
-        settings.read_cmd_args(args[3:])
+    elif len(args) > 4:
+        settings.read_cmd_args(args[4:])
 
-    Mdb2FbxConverter(src, settings).convert_and_export(dest)
+    Mdb2FbxConverter(src, settings).convert_and_export(dest, texture_dest)

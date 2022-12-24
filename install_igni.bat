@@ -1,4 +1,4 @@
-cd E:\Programs\python3.7\Lib
+cd venv\Lib\site-packages
 
 if exist igni\ (
     del /s /f /q igni\*.*
@@ -6,4 +6,4 @@ if exist igni\ (
     rd igni\
 )
 
-xcopy E:\projects\the_witcher\content_pipeline\igni .\igni\ /E
+xcopy ..\..\..\igni .\igni\ /E

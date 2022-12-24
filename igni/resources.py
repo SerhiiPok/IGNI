@@ -289,7 +289,7 @@ class ResourceManager:
 
         def validate_then_create(file: File, resource_types_):
             if not isinstance(resource_types_, tuple):
-                resource_types_ = tuple(resource_types_)
+                resource_types_ = (resource_types_,)
             for resource_type in resource_types_:
                 if resource_type.validate(file):
                     return Resource(file, resource_type)

@@ -33,35 +33,43 @@ class TextureLocatorService:
     this class locates a texture by its name by means of searching specific folders in game contents
     """
 
+    TEXTURE_EXTENSIONS = [
+        'dds',
+        'txi'
+    ]
+
     def __init__(self, mdb2fbx_converter_reference):
         self.converter = mdb2fbx_converter_reference
         self.resource_location_directory = mdb2fbx_converter_reference.source.file.location
         self.logger = mdb2fbx_converter_reference.mdb2fbx_logger
 
+    @classmethod
+    def locate_texture(cls, directory: Directory, texture_name: str):
+        for extension in cls.TEXTURE_EXTENSIONS:
+            full_path = os.path.join(directory.full_path, texture_name + '.' + extension)
+            if os.path.exists(full_path):
+                return File(full_path)
+        return None
+
     def locate(self, texture_name: str):  # TODO
 
-        candidates = [file for file in self.resource_location_directory.files if texture_name == file.name]
+        check_folders = [self.resource_location_directory] + \
+                        [subdir for subdir in self.resource_location_directory.parent.subdirectories
+                         if 'textures' in subdir.name] + \
+                        [subdir for subdir in self.resource_location_directory.parent.subdirectories
+                         if 'textures' not in subdir.name]
 
-        # try searching texture folders under parent if nothing found else look in surroundings
-        if len(candidates) == 0:
-            first_priority_folders = [subdir for subdir in self.resource_location_directory.parent.subdirectories
-                                      if 'textures' in subdir.name]  # TODO parent
-            second_priority_folders = [subdir for subdir in self.resource_location_directory.parent.subdirectories
-                                       if 'textures' not in subdir.name]
-
-        for folder in first_priority_folders + second_priority_folders:
-            candidates = [file for file in folder.files if texture_name == file.name]
-            if len(candidates) != 0:
+        for folder in check_folders:
+            texture = self.locate_texture(folder, texture_name)
+            if texture is not None:
                 break
 
-        if len(candidates) == 0:
-            self.logger.error('no texture with name "{}" found'.format(texture_name))
-            return None
-        elif len(candidates) == 1:
-            return candidates[0]
-        elif len(candidates) > 1:
-            self.logger.warn('located multiple textures for name "{}", choosing first'.format(texture_name))
-            return candidates[0]
+        if texture is None:
+            self.logger.error('could not locate texture "{}"'.format(texture_name))
+        else:
+            self.logger.debug('located texture "{}"'.format(texture_name))
+
+        return texture
 
 
 class TextureConverterJob:
@@ -209,7 +217,8 @@ class Mdb2FbxConverter:
         'logging': {
             'level': {'DEBUG', 'INFO', 'WARN', 'ERROR'}
         },
-        'unit-conversion-factor': float
+        'unit-conversion-factor': float,
+        'flip-uvs': bool
     })
 
     MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS = Settings({
@@ -217,12 +226,13 @@ class Mdb2FbxConverter:
             'format': 'png'
         },
         'skip-nodes': {
-            'if-name-contains': []
+            'if-name-contains': ['shadow', 'Shadow']
         },
         'logging': {
             'level': 'INFO'
         },
-        'unit-conversion-factor': 100.0
+        'unit-conversion-factor': 100.0,
+        'flip-uvs': True
     })
 
     def __init__(self, source: Resource, settings: Settings = Settings()):
@@ -241,23 +251,62 @@ class Mdb2FbxConverter:
 
         self.texture_locator_service = TextureLocatorService(self)
 
-    def _build_fbx_material(self, fbx_material: fbx.FbxSurfacePhong, mdb_material: Material):
+    def _mdb_material_to_fbx_material(self, fbx_material: fbx.FbxSurfacePhong, mdb_material: Material, fbx_scene: fbx.FbxScene):
 
         """
         material conversion being complex topic, this function represents a simplistic approach to texture conversion
         """
 
+        # mapping from aurora texture types to phong texture types
+        TEXTURE_MAPPING = {
+            'tex': 'Diffuse',
+            'ambOcclMap': 'Ambient',
+            'normalmap': 'Bump'
+        }
+
         if mdb_material is None:
-            self.mdb2fbx_logger.debug('material is None, hence nothing to export')
+            self.mdb2fbx_logger.debug('material is None, hence nothing to export and no fbx material created')
             return
 
-        for texture_name in list(mdb_material.textures.values()) + list(mdb_material.bumpmaps.values()):
-            file = self.texture_locator_service.locate(texture_name)
-            if file is not None:
-                self.texture_export_jobs.append(TextureConverterJob(self).
-                                                input(file).
-                                                target_fname(texture_name).
-                                                target_format(self.settings['texture-conversion']['format']))
+        all_textures = mdb_material.textures
+        all_textures.update(mdb_material.bumpmaps)
+
+        for texture_type, texture_name in all_textures.items():
+
+            # -- locate the texture
+            texture_file = self.texture_locator_service.locate(texture_name)
+
+            if texture_file is None and \
+                    any([texture_name.endswith(channel_prefix) for channel_prefix in {'_r', '_g', '_b', '_a'}]): # probably pointer to a specific channel
+                texture_file = self.texture_locator_service.locate(texture_name[0:len(texture_name)-2])
+
+            if texture_file is None:
+                self.mdb2fbx_logger.error('texture with name "{}" not found'.format(texture_name))
+                continue
+
+            # --- link texture in the fbx material
+
+            if texture_type in TEXTURE_MAPPING:
+                texture = fbx.FbxFileTexture.Create(fbx_scene, texture_type)
+                texture.SetFileName(texture_file.name + '.' + self.settings['texture-conversion']['format'])  # TODO this has to point to the exported file, also including relative positioning
+
+                if texture_type in {'bumpmap', 'normalmap'}:
+                    texture.SetTextureUse(fbx.FbxTexture.eBumpNormalMap)
+                else:
+                    texture.SetTextureUse(fbx.FbxTexture.eStandard)
+
+                texture.SetMappingType(fbx.FbxTexture.eUV)
+                texture.SetMaterialUse(fbx.FbxFileTexture.eModelMaterial)
+
+                getattr(fbx_material, TEXTURE_MAPPING[texture_type]).ConnectSrcObject(texture)
+            else:
+                self.mdb2fbx_logger.warn('texture type "{}" will not be linked to fbx material'.format(texture_type))
+
+            # -- add this texture to export jobs
+            self.texture_export_jobs.append(TextureConverterJob(self).
+                                            input(texture_file).
+                                            target_fname(texture_name).
+                                            target_format(self.settings['texture-conversion']['format']))
 
     def _build_fbx_mesh(self, fbx_mesh: fbx.FbxMesh, trimesh: Trimesh):
 
@@ -289,7 +338,12 @@ class Mdb2FbxConverter:
             uv_element.SetReferenceMode(fbx.FbxLayerElement.eDirect)
 
             for uv_coord in trimesh.uv_sets[uv_set_name]:
-                uv_element.GetDirectArray().Add(fbx.FbxVector2(uv_coord[0], uv_coord[1]))
+                if self.settings['flip-uvs']:
+                    coords = (uv_coord[0], 1 - uv_coord[1])
+                else:
+                    coords = (uv_coord[0], uv_coord[1])
+
+                uv_element.GetDirectArray().Add(fbx.FbxVector2(coords[0], coords[1]))
 
     def _build_fbx_node(self, fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
 
@@ -308,7 +362,11 @@ class Mdb2FbxConverter:
                                  Trimesh(source_node.node_data))
 
             # --- materials
-            self._build_fbx_material(None, Material(source_node.node_data.material.data))
+            material = fbx.FbxSurfacePhong.Create(fbx_scene, source_node.node_name.string + '_material')
+            material.ShadingModel.Set('Phong')
+
+            self._mdb_material_to_fbx_material(material, Material(source_node.node_data.material.data), fbx_scene)
+            fbx_node.AddMaterial(material)
 
         else:
             self.mdb2fbx_logger.debug('this node type is not handled')

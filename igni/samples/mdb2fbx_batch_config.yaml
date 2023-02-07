@@ -1,9 +1,9 @@
 batch:
-
   - type: mdb2fbx
     settings:
       exporter:
-        texture-conversion: leave-as-is
+        texture-conversion:
+          format: png
         skip-nodes:
           if-name-contains:
             - Shadowbone
@@ -12,15 +12,15 @@ batch:
           level: DEBUG
         unit-conversion-factor: 100.0
       input:
-        path: path-to-witcher-unbiffed-contents-here
+        path: "E:/projects/the_witcher/content_pipeline/unbiffed"
       logging:
         level: DEBUG
       destination:
         model:
-          destination: path-to-model-directories-here
+          destination: "E:/projects/the_witcher/export_dest/model"
           organization: all-in-one-place
         animation:
-          destination: path-to-animation-directory-here
+          destination: "E:/projects/the_witcher/export_dest/animation"
           organization: all-in-one-place
         texture:
           organization: with-model

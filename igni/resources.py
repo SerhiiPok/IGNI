@@ -83,6 +83,8 @@ class File:
         if len(prefix_root_suffix) > 2:
             self.name_suffix = prefix_root_suffix[len(prefix_root_suffix)-1]
 
+        self.full_file_name = '.'.join(name_and_extension)
+
 
 class Directory:
 

@@ -2,13 +2,12 @@ import sys
 
 import yaml
 
-import mdb2fbx
 from .resources import Directory, ResourceType, ResourceManager, ResourceTypes, Resource
 from .settings import Settings
 from .mdb2fbx import Mdb2FbxConverter
 
 MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
-    'exporter': mdb2fbx.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
+    'exporter': Mdb2FbxConverter.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
     'input': {
         'path': Directory,
         'exclude-files': {
@@ -46,7 +45,7 @@ MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
 })
 
 MDB_2_FBX_BATCH_DEFAULT_SETTINGS = Settings({
-    'exporter': mdb2fbx.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS
+    'exporter': Mdb2FbxConverter.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS
 })
 
 

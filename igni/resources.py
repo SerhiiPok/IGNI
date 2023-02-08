@@ -286,7 +286,10 @@ class Resource:
 class ResourceManager:
 
     def __init__(self, root_dir):
-        self.root_directory = Directory(root_dir)
+        if type(root_dir) is Directory:
+            self.root_directory = root_dir
+        else:
+            self.root_directory = Directory(root_dir)
         self.files = self.root_directory.collect_files()
 
     def get_all_of_type(self, resource_types, filterer=None):

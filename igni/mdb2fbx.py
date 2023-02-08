@@ -241,7 +241,7 @@ class Mdb2FbxConverter:
 
         self.settings: Settings = self.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS
         if len(settings) > 0:
-            self.settings.read_dict(settings)
+            self.settings.read_dict(settings).using_type_hint(self.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
 
         self.texture_export_jobs = []
 

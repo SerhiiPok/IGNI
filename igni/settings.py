@@ -66,7 +66,7 @@ class Settings(dict):
 
         return result
 
-    def use_type_hint(self, type_hint):
+    def using_type_hint(self, type_hint):
 
         def recursive_force_type_hint(settings, type_hint):
             SETTINGS = type(self)
@@ -82,6 +82,8 @@ class Settings(dict):
                     settings[key] = force_type(type_hint[key], settings[key])
 
         recursive_force_type_hint(self, type_hint)
+
+        return self
 
     def read_dict(self, dict_: dict):
         for key in dict_.keys():

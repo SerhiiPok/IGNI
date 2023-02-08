@@ -70,7 +70,7 @@ class Mdb2FbxBatch:
             ]
 
             for filter_spec in filters:
-                filter_input_list = batch.settings.get(filter_spec[0], None)
+                filter_input_list = batch.settings.get(filter_spec[0], default=None)
                 if filter_input_list is not None:
                     checks[filter_spec[1]].append(
                         lambda rsrc: any([filter_spec[2](rsrc.file.name, word) for word in filter_input_list]))
@@ -133,7 +133,7 @@ class Mdb2FbxBatch:
             else:
                 raise Exception('this destination folder organization is not known')
 
-        elif resource.resource_type == ResourceType.MBA:
+        elif resource.resource_type == ResourceTypes.MBA:
 
             animation_destination_settings = self.settings['destination']['animation']
 
@@ -161,7 +161,7 @@ class Mdb2FbxBatch:
         for resource in self.collection:
             converter = Mdb2FbxConverter(resource, self.settings['exporter'])
             destination_folder, texture_destination_folder = self._find_destination_folder(resource)
-            converter.convert_and_export(destination_folder)  # TODO implement texture destination folder
+            converter.convert_and_export(destination_folder, texture_destination_folder)
 
 
 if __name__ == '__main__':
@@ -173,7 +173,7 @@ if __name__ == '__main__':
 
         for batch_definition in batch_input['batch']:
 
-            if batch_definition['name'] == 'mdb2fbx':
-                Mdb2FbxBatch(Settings(batch_definition['settings'])).run()
+            if batch_definition['type'] == 'mdb2fbx':
+                Mdb2FbxBatch(Settings(batch_definition['settings']).using_type_hint(MDB_2_FBX_BATCH_SETTINGS_TEMPLATE)).run()
             else:
                 raise Exception('unknown batch job type')

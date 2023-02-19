@@ -6,7 +6,7 @@ from .settings import Settings
 from .resources import Directory, File, Resource, ResourceTypes
 from .mdbutil import MdbWrapper, Material, Trimesh
 from .logging_util import IgniLogger
-import sqlite3
+from .meta_repository import EXPORT_METADATA_REPOSITORY
 
 LOGGER = IgniLogger(__name__)
 
@@ -136,78 +136,6 @@ class TextureConverterJob:
             self.input_.save(filename=output_path)
         except Exception as e:
             self.logger.error('could not write image: {}'.format(e))
-
-
-# map mdb textures of particular type to particular properties of an fbx material
-class ExportMetadataRepository:
-
-    ADDITIONAL_MATERIAL_BINDINGS = {
-        'normalmap':                  {'normalmap': 'metallic'}  # alpha of normal map contains values for metalness
-    }
-
-    TABLES = (
-        ('material_configuration',
-         ('file TEXT NOT NULL',
-          'mesh TEXT NOT NULL',
-          'material TEXT NOT NULL'),
-         'PRIMARY KEY(file, mesh)'
-         ),
-    )
-
-    def __init__(self):
-        self.logger = None
-        self.connection = None
-
-    def configure(self, db_path, logger_settings: Settings):
-
-        self.logger = IgniLogger(ExportMetadataRepository.__name__, logger_settings)
-
-        if self.connection is not None:
-            return
-
-        def _get_create_table_statement_(table_spec):
-            statement = 'CREATE TABLE IF NOT EXISTS {table_name} ({columns}'.format(table_name=table_spec[0],
-                                                                                    columns=','.join(table_spec[1]))
-            if len(table_spec) > 2:
-                statement += ',' + table_spec[2] + ')'
-            else:
-                statement += ')'
-
-            self.logger.debug('prepared a create_table statement: {}'.format(statement))
-            return statement
-
-        self.connection = sqlite3.connect(db_path)
-        [self.connection.execute(_get_create_table_statement_(table_spec)) for table_spec in self.TABLES]
-
-    def _db_delete_material_spec_(self, file_name: str, mesh_name: str):
-        self.connection.cursor().execute("delete from material_configuration where file='{}' and mesh='{}'".format(file_name, mesh_name))
-
-    def _db_does_material_spec_exist_(self, file_name: str, mesh_name: str):
-        cursor = self.connection.cursor()
-        cursor.execute("select count(*) from material_configuration where file='{}' and mesh='{}'".format(file_name, mesh_name))
-        return cursor.fetchall()[0]
-
-    def _db_save_material_spec_(self, file_name: str, mesh_name: str, material_spec: str):
-        if self._db_does_material_spec_exist_(file_name, mesh_name):
-            self._db_delete_material_spec_(file_name, mesh_name)
-        self.connection.cursor().execute('insert into material_configuration values("{}", "{}", "{}")'.format(file_name, mesh_name, material_spec))
-        self.connection.commit()
-
-    def save_material_spec(self, file_name, mesh_name, material: Material):
-        if self.connection is None:
-            return
-
-        material_spec = material.as_dict()
-        if material.shader in self.ADDITIONAL_MATERIAL_BINDINGS and \
-                self.ADDITIONAL_MATERIAL_BINDINGS[material.shader] is not None and \
-                len(self.ADDITIONAL_MATERIAL_BINDINGS[material.shader]) > 0:
-            for map_from, map_to in self.ADDITIONAL_MATERIAL_BINDINGS[material.shader].items():
-                material_spec['textures'][map_to] = material_spec['textures'][map_from]
-
-        self._db_save_material_spec_(file_name, mesh_name, str(material_spec))
-
-
-EXPORT_METADATA_REPOSITORY = ExportMetadataRepository()
 
 
 class Mdb2FbxConverter:
@@ -385,7 +313,7 @@ class Mdb2FbxConverter:
             EXPORT_METADATA_REPOSITORY.save_material_spec(
                 self.source.file.name,
                 source_node.node_name.string,
-                material)
+                material.as_dict())
             self._export_material_textures_(material)
 
         else:

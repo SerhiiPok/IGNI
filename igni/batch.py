@@ -69,11 +69,20 @@ class Mdb2FbxBatch:
                 ('input.include-files.containing', 'positive', lambda x, y: y in x)
             ]
 
+            class ResourceNameFilterer:
+
+                def __init__(self, lmbda, tokens):
+                    self.lmbda = lmbda
+                    self.tokens = tokens
+
+                def __call__(self, resource):
+                    return any([self.lmbda(resource.file.name, token) for token in self.tokens])
+
             for filter_spec in filters:
                 filter_input_list = batch.settings.get(filter_spec[0], default=None)
                 if filter_input_list is not None:
                     checks[filter_spec[1]].append(
-                        lambda rsrc: any([filter_spec[2](rsrc.file.name, word) for word in filter_input_list]))
+                        ResourceNameFilterer(filter_spec[2], filter_input_list))
 
             def do_filter(resource):
                 if not all([check(resource) for check in checks['positive']]):
@@ -114,7 +123,9 @@ class Mdb2FbxBatch:
                 destination_folder = model_destination
             elif model_organization == 'by-prefix':  # folder for this prefix under destination folder
                 destination_folder = model_destination.create_subdirectory(
-                    model_destination_settings['prefix-settings'].get(resource.file.name_prefix, 'unassigned')
+                    model_destination_settings['prefix-settings'].get(
+                        resource.file.name_prefix if resource.file.name_prefix is not None else 'unassigned',
+                        default='unassigned')
                 )
             elif model_organization == 'folder-per-model':
                 destination_folder = model_destination.create_subdirectory(resource.file.name)

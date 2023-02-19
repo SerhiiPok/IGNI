@@ -2,12 +2,13 @@ from .mdb import Mdb
 import os
 import fbx
 import sys
-import logging
 from .settings import Settings
 from .resources import Directory, File, Resource, ResourceTypes
 from .mdbutil import MdbWrapper, Material, Trimesh
+from .logging_util import IgniLogger
+import sqlite3
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = IgniLogger(__name__)
 
 try:
     from wand import image
@@ -41,7 +42,7 @@ class TextureLocatorService:
     def __init__(self, mdb2fbx_converter_reference):
         self.converter = mdb2fbx_converter_reference
         self.resource_location_directory = mdb2fbx_converter_reference.source.file.location
-        self.logger = mdb2fbx_converter_reference.mdb2fbx_logger
+        self.logger = IgniLogger(TextureLocatorService.__name__)
 
     @classmethod
     def locate_texture(cls, directory: Directory, texture_name: str):
@@ -79,7 +80,7 @@ class TextureConverterJob:
     """
 
     def __init__(self, mdb2fbx_converter_reference):
-        self.logger = mdb2fbx_converter_reference.mdb2fbx_logger
+        self.logger = IgniLogger(TextureConverterJob.__name__)
 
         if image is None:
             self.logger.error('could not create texture converter instance because wand is not properly installed')
@@ -137,71 +138,76 @@ class TextureConverterJob:
             self.logger.error('could not write image: {}'.format(e))
 
 
-class Mdb2FbxConverterLogger:
+# map mdb textures of particular type to particular properties of an fbx material
+class ExportMetadataRepository:
 
-    def __init__(self, input_file: File):
-        self.logger = logging.getLogger(Mdb2FbxConverter.__name__)
-        self.input_file = input_file
-        self.context_ = None
+    ADDITIONAL_MATERIAL_BINDINGS = {
+        'normalmap':                  {'normalmap': 'metallic'}  # alpha of normal map contains values for metalness
+    }
 
-    def context(self, context):
-        self.context_ = context
-        return self
+    TABLES = (
+        ('material_configuration',
+         ('file TEXT NOT NULL',
+          'mesh TEXT NOT NULL',
+          'material TEXT NOT NULL'),
+         'PRIMARY KEY(file, mesh)'
+         ),
+    )
 
-    def _get_context_inf(self):
-        if isinstance(self.context_, Mdb.Node):
-            return self.context_.node_name.string
-        else:
-            return ''
+    def __init__(self):
+        self.logger = None
+        self.connection = None
 
-    # logging at four levels
-    def _decorate_message(self, msg):
-        inf = {
-            'input': str(self.input_file),
-            'msg': msg
-        }  # TODO file must have full file path attribute
+    def configure(self, db_path, logger_settings: Settings):
 
-        if self.context_ is not None:
-            inf['context'] = {
-                'type': str(type(self.context_)),
-                'info': self._get_context_inf()
-            }
+        self.logger = IgniLogger(ExportMetadataRepository.__name__, logger_settings)
 
-        return str(inf)
-
-    def debug(self, msg):
-        self.logger.debug(self._decorate_message(msg))
-
-    def info(self, msg):
-        self.logger.info(self._decorate_message(msg))
-
-    def warn(self, msg):
-        self.logger.warning(self._decorate_message(msg))
-
-    def error(self, msg):
-        self.logger.error(self._decorate_message(msg))
-
-    def log_trimesh(self, trimesh: Trimesh):
-
-        if len(trimesh.vertices) == 0:
-            self.warn('mesh vertices array is empty')
+        if self.connection is not None:
             return
 
-        if len(trimesh.faces) == 0:
-            self.warn('mesh faces are not defined')
-        if len(trimesh.normals) == 0:
-            self.warn('mesh normals are not defined')
-        # TODO uvs
+        def _get_create_table_statement_(table_spec):
+            statement = 'CREATE TABLE IF NOT EXISTS {table_name} ({columns}'.format(table_name=table_spec[0],
+                                                                                    columns=','.join(table_spec[1]))
+            if len(table_spec) > 2:
+                statement += ',' + table_spec[2] + ')'
+            else:
+                statement += ')'
 
-        inconsistent_lengths = len(trimesh.vertices) != len(trimesh.normals)
-        for uv_set in trimesh.uv_sets:
-            if len(trimesh.vertices) != len(uv_set):
-                inconsistent_lengths = True
-        if inconsistent_lengths:
-            self.warn('number of mesh vertices is not equal to number of normals or uvs')
+            self.logger.debug('prepared a create_table statement: {}'.format(statement))
+            return statement
 
-        self.debug('mesh has {} faces and {} vertices'.format(
-            len(trimesh.faces), len(trimesh.vertices)))
+        self.connection = sqlite3.connect(db_path)
+        [self.connection.execute(_get_create_table_statement_(table_spec)) for table_spec in self.TABLES]
+
+    def _db_delete_material_spec_(self, file_name: str, mesh_name: str):
+        self.connection.cursor().execute("delete from material_configuration where file='{}' and mesh='{}'".format(file_name, mesh_name))
+
+    def _db_does_material_spec_exist_(self, file_name: str, mesh_name: str):
+        cursor = self.connection.cursor()
+        cursor.execute("select count(*) from material_configuration where file='{}' and mesh='{}'".format(file_name, mesh_name))
+        return cursor.fetchall()[0]
+
+    def _db_save_material_spec_(self, file_name: str, mesh_name: str, material_spec: str):
+        if self._db_does_material_spec_exist_(file_name, mesh_name):
+            self._db_delete_material_spec_(file_name, mesh_name)
+        self.connection.cursor().execute('insert into material_configuration values("{}", "{}", "{}")'.format(file_name, mesh_name, material_spec))
+        self.connection.commit()
+
+    def save_material_spec(self, file_name, mesh_name, material: Material):
+        if self.connection is None:
+            return
+
+        material_spec = material.as_dict()
+        if material.shader in self.ADDITIONAL_MATERIAL_BINDINGS and \
+                self.ADDITIONAL_MATERIAL_BINDINGS[material.shader] is not None and \
+                len(self.ADDITIONAL_MATERIAL_BINDINGS[material.shader]) > 0:
+            for map_from, map_to in self.ADDITIONAL_MATERIAL_BINDINGS[material.shader].items():
+                material_spec['textures'][map_to] = material_spec['textures'][map_from]
+
+        self._db_save_material_spec_(file_name, mesh_name, str(material_spec))
+
+
+EXPORT_METADATA_REPOSITORY = ExportMetadataRepository()
 
 
 class Mdb2FbxConverter:
@@ -214,11 +220,10 @@ class Mdb2FbxConverter:
             'if-name-contains': list,
             'of-type': list
         },
-        'logging': {
-            'level': {'DEBUG', 'INFO', 'WARN', 'ERROR'}
-        },
+        'logging': IgniLogger.LOGGING_SETTINGS_TEMPLATE,
         'unit-conversion-factor': float,
-        'flip-uvs': bool
+        'flip-uvs': bool,
+        'repository-path': str
     })
 
     MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS = Settings({
@@ -228,9 +233,7 @@ class Mdb2FbxConverter:
         'skip-nodes': {
             'if-name-contains': ['shadow', 'Shadow']
         },
-        'logging': {
-            'level': 'INFO'
-        },
+        'logging': IgniLogger.LOGGING_DEFAULT_SETTINGS,
         'unit-conversion-factor': 100.0,
         'flip-uvs': True
     })
@@ -246,27 +249,38 @@ class Mdb2FbxConverter:
         self.texture_export_jobs = []
 
         self.context = None
-        self.mdb2fbx_logger = Mdb2FbxConverterLogger(self.source.file)
-        self.mdb2fbx_logger.logger.setLevel(self.settings['logging']['level'])
+        self.logger = IgniLogger(Mdb2FbxConverter.__name__, self.settings['logging'])
 
         self.texture_locator_service = TextureLocatorService(self)
 
-    def _mdb_material_to_fbx_material(self, fbx_material: fbx.FbxSurfacePhong, mdb_material: Material, fbx_scene: fbx.FbxScene):
+        repository_path = self.settings.get('repository-path', default=None)
+        EXPORT_METADATA_REPOSITORY.configure(repository_path, self.settings['logging'])
+
+    def debug_log_trimesh(self, trimesh: Trimesh):
+
+        nvert = len(trimesh.vertices)
+        nfaces = len(trimesh.faces)
+        nnorms = len(trimesh.normals)
+        nbinorms = len(trimesh.binormals)
+        ntangents = len(trimesh.tangents)
+
+        self.logger.debug("mesh has {} vertices, {} faces, {} normals, {} binormals, {} tangents"
+                          .format(nvert, nfaces, nnorms, nbinorms, ntangents))
+
+        if nvert != nnorms:
+            self.logger.warn("number of vertices not equal to number of normals in the mesh")
+
+    def _export_material_textures_(self, mdb_material: Material):
 
         """
         material conversion being complex topic, this function represents a simplistic approach to texture conversion
         """
 
-        # mapping from aurora texture types to phong texture types
-        TEXTURE_MAPPING = {
-            'tex': 'Diffuse',
-            'ambOcclMap': 'Ambient',
-            'normalmap': 'Bump'
-        }
-
         if mdb_material is None:
-            self.mdb2fbx_logger.debug('material is None, hence nothing to export and no fbx material created')
+            self.logger.debug('material is None, hence nothing to export and no fbx material created')
             return
+
+        self.logger.debug("building fbx material from source material: {}".format(mdb_material))
 
         all_textures = mdb_material.textures
         all_textures.update(mdb_material.bumpmaps)
@@ -278,16 +292,18 @@ class Mdb2FbxConverter:
 
             if texture_file is None and \
                     any([texture_name.endswith(channel_prefix) for channel_prefix in {'_r', '_g', '_b', '_a'}]): # probably pointer to a specific channel
+                self.logger.info("'{}' probably points to a channel in another texture file".format(texture_name))
                 texture_file = self.texture_locator_service.locate(texture_name[0:len(texture_name)-2])
 
             if texture_file is None:
-                self.mdb2fbx_logger.error('texture with name "{}" not found'.format(texture_name))
+                self.logger.error('texture with name "{}" not found'.format(texture_name))
                 continue
 
+            '''
             # --- link texture in the fbx material
 
             if texture_type in TEXTURE_MAPPING:
-                texture = fbx.FbxFileTexture.Create(fbx_scene, texture_type)
+                texture = fbx.FbxFileTexture.Create(fbx_scene, texture_name)
                 texture.SetFileName(texture_file.name + '.' + self.settings['texture-conversion']['format'])  # TODO this has to point to the exported file, also including relative positioning
 
                 if texture_type in {'bumpmap', 'normalmap'}:
@@ -298,9 +314,13 @@ class Mdb2FbxConverter:
                 texture.SetMappingType(fbx.FbxTexture.eUV)
                 texture.SetMaterialUse(fbx.FbxFileTexture.eModelMaterial)
 
+                self.logger.debug('texture "{}" of type "{}" will be mapped to fbx material property "{}"'
+                                  .format(texture_name, texture_type, TEXTURE_MAPPING[texture_type]))
+
                 getattr(fbx_material, TEXTURE_MAPPING[texture_type]).ConnectSrcObject(texture)
             else:
-                self.mdb2fbx_logger.warn('texture type "{}" will not be linked to fbx material'.format(texture_type))
+                self.logger.warn('texture type "{}" will not be linked to fbx material as this texture type is not mapped'.format(texture_type))
+            '''
 
             # -- add this texture to export jobs
             self.texture_export_jobs.append(TextureConverterJob(self).
@@ -311,7 +331,7 @@ class Mdb2FbxConverter:
     def _build_fbx_mesh(self, fbx_mesh: fbx.FbxMesh, trimesh: Trimesh):
 
         # -- check input parameters
-        self.mdb2fbx_logger.log_trimesh(trimesh)
+        self.debug_log_trimesh(trimesh)
 
         # -- build mesh data
         fbx_mesh.InitControlPoints(len(trimesh.vertices))
@@ -347,9 +367,8 @@ class Mdb2FbxConverter:
 
     def _build_fbx_node(self, fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
 
+        self.logger.debug('start building fbx node')
         fbx_node.SetName(source_node.node_name.string)
-
-        self.mdb2fbx_logger.debug('node type is {}'.format(source_node.node_type.name))
 
         # do translation, rotation, etc.
         if source_node.node_type == Mdb.NodeType.trimesh or \
@@ -362,52 +381,52 @@ class Mdb2FbxConverter:
                                  Trimesh(source_node.node_data))
 
             # --- materials
-            material = fbx.FbxSurfacePhong.Create(fbx_scene, source_node.node_name.string + '_material')
-            material.ShadingModel.Set('Phong')
-
-            self._mdb_material_to_fbx_material(material, Material(source_node.node_data.material.data), fbx_scene)
-            fbx_node.AddMaterial(material)
+            material = Material(source_node.node_data.material.data)
+            EXPORT_METADATA_REPOSITORY.save_material_spec(
+                self.source.file.name,
+                source_node.node_name.string,
+                material)
+            self._export_material_textures_(material)
 
         else:
-            self.mdb2fbx_logger.debug('this node type is not handled')
+            self.logger.debug('node type is not handled, it has been added to scene but its data wont be built')
 
     def _build_fbx_scene(self, fbx_scene: fbx.FbxScene, source: Mdb):
-
-        self.mdb2fbx_logger.debug('start building fbx scene')
 
         def recursive_add_nodes(source_nodes, under_parent: fbx.FbxNode):
             for source_node in source_nodes:
 
-                self.mdb2fbx_logger.context(source_node)
+                self.logger.context = {
+                    'source_object': source_node,
+                    'source_object_type': source_node.node_type.name,
+                    'source_object_name': source_node.node_name.string
+                }
 
                 skip_containing_words = self.settings.get('skip-nodes.if-name-contains', default=[])
 
                 if any([word in source_node.node_name.string for word in skip_containing_words]):
                     if len(source_node.children.data) > 0:
-                        self.mdb2fbx_logger.warn(
-                            'skipping node {} which contains children will result in data loss'.
-                                format(source_node.node_name.string)
-                        )
+                        self.logger.warn('skipping node which contains children will result in data loss')
                     continue
 
                 fbx_node = fbx.FbxNode.Create(fbx_scene, '')
                 under_parent.AddChild(fbx_node)
                 self._build_fbx_node(fbx_node, source_node, fbx_scene)
 
-                self.mdb2fbx_logger.context(None)
+                self.logger.context = None
 
                 recursive_add_nodes(
                     [child_ptr.data for child_ptr in source_node.children.data],
                     fbx_node
                 )
 
-        self.mdb2fbx_logger.debug('building node tree')
+        self.logger.debug('start building fbx scene from mdb scene tree')
         recursive_add_nodes([child_ptr.data for child_ptr in source.root_node.children.data],
                             fbx_scene.GetRootNode())
 
     def _export(self, scene: fbx.FbxScene, dest):
 
-        self.mdb2fbx_logger.debug('exporting fbx scene')
+        self.logger.debug('exporting fbx scene')
 
         fbx_exporter = fbx.FbxExporter.Create(MEMORY_MANAGER, '')
         fbx_exporter.Initialize(os.path.join(dest, self.source.file.name), -1, MEMORY_MANAGER.GetIOSettings())

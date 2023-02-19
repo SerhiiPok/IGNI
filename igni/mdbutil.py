@@ -101,6 +101,15 @@ class Material:
                 'properties': self.properties}
         return str(data)
 
+    def as_dict(self):
+        textures = {key:val for key, val in self.textures.items()}
+        textures.update(self.bumpmaps)
+        return {
+            'shader': self.shader,
+            'textures': textures,
+            'parameters': self.properties
+        }
+
     def parse_data(self, material_spec: list):
 
         def line_clean_up(line):

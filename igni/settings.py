@@ -3,6 +3,9 @@ import yaml
 
 def force_type(type_hint, prop_value):
 
+    if isinstance(type_hint, type) and isinstance(prop_value, type_hint):
+        return prop_value
+
     # only a subset of values allowed
     if isinstance(type_hint, set):
         allowed_set = type_hint
@@ -122,7 +125,13 @@ class Settings(dict):
         return self.read_dict(deep_from_shallow)
 
     def read_cmd_args(self, cmd_args):
-        return self.read_props({arg_name: arg_val for arg_name, arg_val in [cmd_arg.split('=') for cmd_arg in cmd_args]})
+        def clean_possible_dashes(string: str):
+            string_ = string
+            while string_.startswith('-'):
+                string_ = string_[1:]
+            return string_
+
+        return self.read_props({clean_possible_dashes(arg_name): arg_val for arg_name, arg_val in [cmd_arg.split('=') for cmd_arg in cmd_args]})
 
     def read_yaml(self, path):
         with open(path, 'r') as stream:

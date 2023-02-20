@@ -184,6 +184,16 @@ class Mdb2FbxConverter:
         repository_path = self.settings.get('repository-path', default=None)
         EXPORT_METADATA_REPOSITORY.configure(repository_path, self.settings['logging'])
 
+        self.file_meta = {
+            'file': self.source.file.name,
+            'node_count': 0,
+            'mesh_count': 0,
+            'material_count': 0,
+            'bone_count': 0,
+            'animation_count': 0,
+            'tri_count': 0
+        }
+
     def debug_log_trimesh(self, trimesh: Trimesh):
 
         nvert = len(trimesh.vertices)
@@ -258,6 +268,9 @@ class Mdb2FbxConverter:
 
     def _build_fbx_mesh(self, fbx_mesh: fbx.FbxMesh, trimesh: Trimesh):
 
+        self.file_meta['mesh_count'] += 1
+        self.file_meta['tri_count'] += len(trimesh.faces)
+
         # -- check input parameters
         self.debug_log_trimesh(trimesh)
 
@@ -295,6 +308,12 @@ class Mdb2FbxConverter:
 
     def _build_fbx_node(self, fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
 
+        EXPORT_METADATA_REPOSITORY.save_mdb_node_meta(
+            self.source.file.name,
+            source_node.node_name.string,
+            source_node.node_type.name)
+        self.file_meta['node_count'] += 1
+
         self.logger.debug('start building fbx node')
         fbx_node.SetName(source_node.node_name.string)
 
@@ -310,6 +329,10 @@ class Mdb2FbxConverter:
 
             # --- materials
             material = Material(source_node.node_data.material.data)
+
+            if material.shader is not None and len(material.shader) > 0:  # TODO proper check
+                self.file_meta['material_count'] += 1
+
             EXPORT_METADATA_REPOSITORY.save_material_spec(
                 self.source.file.name,
                 source_node.node_name.string,
@@ -351,6 +374,14 @@ class Mdb2FbxConverter:
         self.logger.debug('start building fbx scene from mdb scene tree')
         recursive_add_nodes([child_ptr.data for child_ptr in source.root_node.children.data],
                             fbx_scene.GetRootNode())
+
+        EXPORT_METADATA_REPOSITORY.save_mdb_file_meta(self.file_meta['file'],
+                                                      self.file_meta['node_count'],
+                                                      self.file_meta['mesh_count'],
+                                                      self.file_meta['material_count'],
+                                                      self.file_meta['bone_count'],
+                                                      self.file_meta['animation_count'],
+                                                      self.file_meta['tri_count'])
 
     def _export(self, scene: fbx.FbxScene, dest):
 

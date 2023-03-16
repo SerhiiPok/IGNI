@@ -269,9 +269,6 @@ class FbxFileExportJob:
         }
         self.coord_service = CoordinateSystemService(self.settings['coordinate-system'])
 
-        repository_path = self.settings.get('repository-path', default=None)
-        EXPORT_METADATA_REPOSITORY.configure(repository_path, self.settings['logging'])
-
     @property
     def logger(self):
         if self._logger is not None:

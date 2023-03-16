@@ -7,6 +7,7 @@ from .settings import Settings
 from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
+from .logging_util import IgniLogger
 
 MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
     'exporter': FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
@@ -55,6 +56,8 @@ class Mdb2FbxBatch:
 
     def __init__(self, settings: Settings = Settings()):
         self.settings = settings
+        self.collection = None
+        self._logger: IgniLogger = None
 
         resource_manager = ResourceManager(self.settings['input']['path'])
 
@@ -98,6 +101,14 @@ class Mdb2FbxBatch:
             return do_filter
 
         self.collection = resource_manager.get_all_of_type((ResourceTypes.MDB, ResourceTypes.MBA), get_item_filter(self))
+
+    @property
+    def logger(self):
+        if self._logger is not None:
+            return self._logger
+
+        self._logger = IgniLogger(Mdb2FbxBatch.__name__, self.settings['logging'])
+        return self._logger
 
     def _find_in_collection_by_name_root_and_resource_type(self, name_root: str, resource_type: ResourceType):
         found_items = [resource for resource in self.collection if name_root == resource.file.name_root]
@@ -172,21 +183,21 @@ class Mdb2FbxBatch:
 
     def run(self):
 
-        task_pool = ProcessPoolExecutor(max_workers=multiprocessing.cpu_count())
+        def handle_task_result(result):
+            if result.result() is not None:
+                self.logger.error('type of the result is: ' + str(type(result.result())))
+            if isinstance(result, Exception):
+                self.logger.error('task execution finished with an exception: ' + str(result))
 
-        for resource in self.collection:
-            destination_folder, texture_destination_folder = self._find_destination_folder(resource)
-            [task_pool.submit(task) for task in
-             Mdb2FbxConversionTaskDispatcher(resource,
-                                             destination_folder,
-                                             texture_destination_folder,
-                                             self.settings['exporter']).get_tasks()]
-            # TODO error handling
+        with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as task_pool:
+            for resource in self.collection:
+                destination_folder, texture_destination_folder = self._find_destination_folder(resource)
+                [task_pool.submit(task).add_done_callback(handle_task_result) for task in
+                 Mdb2FbxConversionTaskDispatcher(resource,
+                                                 destination_folder,
+                                                 texture_destination_folder,
+                                                 self.settings['exporter']).get_tasks()]
 
-        task_pool.shutdown(wait=True)
-
-
-ASYNC_TASK_EXECUTOR = None  # TODO this must be made configurable
 
 if __name__ == '__main__':
     args = sys.argv

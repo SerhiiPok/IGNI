@@ -63,6 +63,10 @@ class WitcherAssetRepository:
 
     def list_asset_file_paths(self):
 
+        """
+        lists file paths of all assets (recursive) to be found under witcher root directory
+        """
+
         def _split_path_(object_path: str):
             last_slash_ind = object_path.rfind('/')
             if last_slash_ind >= 0:

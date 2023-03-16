@@ -4,10 +4,12 @@ import yaml
 
 from .resources import Directory, ResourceType, ResourceManager, ResourceTypes, Resource
 from .settings import Settings
-from .mdb2fbx import Mdb2FbxConverter
+from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
-    'exporter': Mdb2FbxConverter.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
+    'exporter': FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
     'input': {
         'path': Directory,
         'exclude-files': {
@@ -45,7 +47,7 @@ MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
 })
 
 MDB_2_FBX_BATCH_DEFAULT_SETTINGS = Settings({
-    'exporter': Mdb2FbxConverter.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS
+    'exporter': FbxFileExportJob.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS
 })
 
 
@@ -169,11 +171,22 @@ class Mdb2FbxBatch:
         return destination_folder, texture_destination_folder
 
     def run(self):
-        for resource in self.collection:
-            converter = Mdb2FbxConverter(resource, self.settings['exporter'])
-            destination_folder, texture_destination_folder = self._find_destination_folder(resource)
-            converter.convert_and_export(destination_folder, texture_destination_folder)
 
+        task_pool = ProcessPoolExecutor(max_workers=multiprocessing.cpu_count())
+
+        for resource in self.collection:
+            destination_folder, texture_destination_folder = self._find_destination_folder(resource)
+            [task_pool.submit(task) for task in
+             Mdb2FbxConversionTaskDispatcher(resource,
+                                             destination_folder,
+                                             texture_destination_folder,
+                                             self.settings['exporter']).get_tasks()]
+            # TODO error handling
+
+        task_pool.shutdown(wait=True)
+
+
+ASYNC_TASK_EXECUTOR = None  # TODO this must be made configurable
 
 if __name__ == '__main__':
     args = sys.argv

@@ -233,8 +233,10 @@ types:
         type: u4
       - id: node_name
         type: strl(64)
-      - id: parent_geometry_parent_node
-        size: 8
+      - id: parent_geometry
+        size: 4
+      - id: parent_node
+        type: ptr('node', 32)
       - id: children
         type: ptr_array_ptr('node', 32, 32)
       - id: controller_defs

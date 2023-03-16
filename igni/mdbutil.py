@@ -1,7 +1,9 @@
 from .mdb import Mdb
+from collections.abc import Iterable
+from typing import List
 
 '''
-defines a wrapper for kaitai auto-generated Mdb class
+defines a wrapper for kaitai auto-generated Mdb class and some utility functions
 '''
 
 
@@ -17,7 +19,7 @@ class AnimationCurve:
 
         times = controller_data[times_start:(times_start + key_count)]
 
-        values = controller_data[values_start:(values_start + key_count*chnl_count)]
+        values = controller_data[values_start:(values_start + key_count * chnl_count)]
         values = [values[i:(i + chnl_count)] for i in range(0, key_count)]
 
         self.data = {times[i]: values[i] for i in range(0, key_count)}
@@ -79,6 +81,114 @@ class Trimesh:
                 self.uv_sets['UvSet{}'.format(i)] = ((c.u, c.v) for c in uv_array_pointer.data)
 
 
+class NodeProperty:
+
+    @staticmethod
+    def _is_empty_(data):
+        return data is None or len(data) == 0
+
+    @staticmethod
+    def _is_formatted_as_animation_(data):
+        for time_val in data:
+            if isinstance(time_val, tuple) and len(time_val) == 2:
+                return True
+
+    def __init__(self, property_type, data):
+        self.type = property_type
+
+        if self._is_empty_(data):
+            self.value = None
+            self.frames = None
+        elif self._is_formatted_as_animation_(data):
+            self.frames = data
+            self.value = self.frames[0][1]
+        else:
+            self.value = data
+            self.frames = tuple(0.0, data)
+
+    def empty(self):
+        return self._is_empty_(self.value)
+
+    def is_animated(self):
+        return self.key_count() > 1
+
+    def key_count(self):
+        if not self.empty():
+            return len(self.frames)
+        else:
+            return 0
+
+
+class NodeProperties:
+
+    ePropertyTypeLocation = 'location'
+    ePropertyTypeRotation = 'rotation'
+    ePropertyTypeAlpha = 'alpha'
+    ePropertyTypeScale = 'scale'
+    ePropertyTypeSelfIllum = 'self_illum'
+
+    @classmethod
+    def from_node(cls, node: Mdb.Node):
+        return cls(node.controller_defs.data, node.controller_data.data)
+
+    def __init__(self, controller_defs, controller_data):
+
+        # location, rotation, etc. are either a dict (representing animation) or a single value (no animation, static)
+        self.location: NodeProperty = None
+        self.rotation: NodeProperty = None
+        self.scale: NodeProperty = None
+        self.self_illum: NodeProperty = None
+        self.alpha: NodeProperty = None
+
+        self._mdb_controller_type_map = {
+            'position': self.ePropertyTypeLocation,
+            'orientation': self.ePropertyTypeRotation,
+            'alpha': self.ePropertyTypeAlpha,
+            'scale': self.ePropertyTypeScale,
+            'self_illum': self.ePropertyTypeSelfIllum
+        }
+
+        self._init_data_(controller_defs, controller_data)
+
+    def _is_unknown_controller_type_(self, controller_def):
+        if not isinstance(controller_def.controller_type, Mdb.ControllerType) or \
+                controller_def.controller_type.name not in self._mdb_controller_type_map:
+            return True
+        return False
+
+    @classmethod
+    def _get_property_data_(cls,
+                            shared_array,
+                            times_start,
+                            values_start,
+                            channel_count,
+                            key_count):
+        times = shared_array[times_start:(times_start + key_count)]
+        values = shared_array[values_start:(values_start + channel_count * key_count)]
+
+        if len(times) == 0 or len(values) == 0 or len(times) != len(values) / channel_count:
+            raise Exception('property data seems to have inconsistent number of keys or values')
+
+        values = [tuple(values[i:(i + channel_count)]) for i
+                  in range(0, len(values), channel_count)]
+        return [tuple([time, value]) for time, value in zip(times, values)]
+
+    def _init_data_(self, controller_defs, controller_data):
+        for controller_def in controller_defs:
+            if self._is_unknown_controller_type_(controller_def):
+                continue  # log
+
+            property_type = self._mdb_controller_type_map[controller_def.controller_type.name.lower()]
+            self.__setattr__(
+                property_type,
+                NodeProperty(property_type, self._get_property_data_(controller_data,
+                                                                     controller_def.times_start,
+                                                                     controller_def.values_start,
+                                                                     controller_def.channel_count,
+                                                                     controller_def.key_count))
+            )
+
+
 # a wrapper class for mdb materials
 class Material:
 
@@ -94,6 +204,9 @@ class Material:
 
         self.parse_data(material_descr.material_spec)
 
+    def is_empty(self):
+        return len(self.shader) == 0 and len(self.textures) == 0 and len(self.bumpmaps) == 0
+
     def __str__(self):
         data = {'shader': self.shader,
                 'textures': self.textures,
@@ -101,8 +214,13 @@ class Material:
                 'properties': self.properties}
         return str(data)
 
+    def get_all_textures(self):
+        textures = {key: val for key, val in self.textures.items()}
+        textures.update(self.bumpmaps)
+        return textures
+
     def as_dict(self):
-        textures = {key:val for key, val in self.textures.items()}
+        textures = {key: val for key, val in self.textures.items()}
         textures.update(self.bumpmaps)
         return {
             'shader': self.shader,
@@ -163,13 +281,12 @@ class Material:
 
 
 def print_node_tree(node, print_this=lambda nd: nd.node_name.string):
-
     def recursive_print(nodes, indent_string, depth, print_this):
         if len(nodes) == 0:
             return
         for node in [node_ptr.data for node_ptr in nodes]:
             this = print_this(node)
-            print(indent_string*depth + this)
+            print(indent_string * depth + this)
             recursive_print(node.children.data, indent_string, depth + 1, print_this)
 
     print(print_this(node))
@@ -178,30 +295,95 @@ def print_node_tree(node, print_this=lambda nd: nd.node_name.string):
 
 class MdbWrapper:
 
+    @staticmethod
+    def get_all_nodes(mdb: Mdb) -> List[Mdb.Node]:
+        flat_nodes = []
+
+        def recursive_append_node_and_children(node: Mdb.Node):
+            flat_nodes.append(node)
+            for child in node.children.data:
+                recursive_append_node_and_children(child.data)
+
+        recursive_append_node_and_children(mdb.root_node)
+
+        return flat_nodes
+
+    @staticmethod
+    def get_all_materials(mdb: Mdb) -> Material:
+        nodes = get_all_nodes(mdb)
+
+        materials = []
+
+        for node in nodes:
+            material = Material(node.node_data.material.data, node)
+            if not material.is_empty():
+                materials.append(material)
+
+        return materials
+
+    @staticmethod
+    def get_all_bones(mdb: Mdb) -> List[Mdb.Node]:
+
+        bones: List[Mdb.Node] = []
+        nodes = get_all_nodes(mdb)
+
+        skins = [node for node in get_all_nodes(mdb) if node.node_type == Mdb.NodeType.skin]
+        for skin in skins:
+            for bone in skin.node_data.bones.data:
+                if bone.bone_name.string not in [node.node_name.string for node in bones]:
+                    nodes_matched_by_bone_name = [node for node in nodes if
+                                                  node.node_name.string == bone.bone_name.string]
+                    if len(nodes_matched_by_bone_name) != 1:
+                        raise Exception('found zero or >1 nodes matching the bone name')
+                    bones.append(nodes_matched_by_bone_name[0])
+
+        return bones
+
+    @staticmethod
+    def get_all_animated_nodes(mdb: Mdb) -> List[Mdb.Node]:
+
+        def get_animation_nodes(animation: Mdb.Animation) -> List[Mdb.AnimationNode]:
+
+            animation_nodes: List[Mdb.AnimationNode] = []
+
+            def add_animation_nodes_recursive(anim_node: Mdb.AnimationNode):
+                animation_nodes.append(anim_node)
+                for anim_child_node in anim_node.children.data:
+                    add_animation_nodes_recursive(anim_child_node.data)
+
+            add_animation_nodes_recursive(animation.root_animation_node.data)
+
+            return animation_nodes
+
+        nodes = get_all_nodes(mdb)
+        animations = mdb.animations.animation_array_pointer.data
+
+        animated_nodes: List[Mdb.Node] = []
+
+        for animation in animations:
+            animation_nodes = get_animation_nodes(animation.data)
+            for animation_node in animation_nodes:
+                nodes_matching_by_animated_node_name = [node for node in nodes if
+                                                        node.node_name.string == animation_node.name.string]
+                if len(nodes_matching_by_animated_node_name) != 1:
+                    raise Exception('found 0 or >1 nodes matching animated node by name')
+                animated_nodes.append(nodes_matching_by_animated_node_name[0])
+
+        return animated_nodes
+
     def _init_data(self):
         if self.mdb is None:
             return
 
         # nodes
-        def recursive_node_scan(node: Mdb.Node, mdb_wrapper):
+        self.nodes = self.get_all_nodes(self.mdb)
 
-            self.nodes.append(node)
+        # meshes
+        self.meshes = [node for node in self.nodes if node.node_type in {Mdb.NodeType.skin, Mdb.NodeType.trimesh}]
 
-            if node.node_type == Mdb.NodeType.trimesh and isinstance(node.node_data, Mdb.Trimesh):
-                # geometry
-                mdb_wrapper.meshes.append(Trimesh(node.node_data, node))
-
-                # materials
-                if node.node_data.material.data is not None:
-                    self.materials.append(Material(node.node_data.material.data))
-
-            for child_node_pointer in node.children.data:
-                recursive_node_scan(child_node_pointer.data, mdb_wrapper)
-
-        self.nodes.append(self.mdb.root_node)
-        recursive_node_scan(self.mdb.root_node, self)
-
-        # animations
+        # materials
+        all_materials = [Material(node.node_data.material.data) for node in self.meshes]
+        self.materials = [material for material in all_materials if not material.is_empty()]
 
     def get_node_by(self, eval_expr):
         for node in self.nodes:
@@ -219,3 +401,77 @@ class MdbWrapper:
         self.animations = []
 
         self._init_data()
+
+
+def get_all_nodes(mdb: Mdb) -> List[Mdb.Node]:
+    flat_nodes = []
+
+    def recursive_append_node_and_children(node: Mdb.Node):
+        flat_nodes.append(node)
+        for child in node.children.data:
+            recursive_append_node_and_children(child.data)
+
+    recursive_append_node_and_children(mdb.root_node)
+
+    return flat_nodes
+
+
+def get_all_materials(mdb: Mdb) -> Material:
+    nodes = get_all_nodes(mdb)
+
+    materials = []
+
+    for node in nodes:
+        material = Material(node.node_data.material.data, node)
+        if not material.is_empty():
+            materials.append(material)
+
+    return materials
+
+
+def get_all_bones(mdb: Mdb) -> List[Mdb.Node]:
+
+    bones: List[Mdb.Node] = []
+    nodes = get_all_nodes(mdb)
+
+    skins = [node for node in get_all_nodes(mdb) if node.node_type == Mdb.NodeType.skin]
+    for skin in skins:
+        for bone in skin.node_data.bones.data:
+            if bone.bone_name.string not in [node.node_name.string for node in bones]:
+                nodes_matched_by_bone_name = [node for node in nodes if node.node_name.string == bone.bone_name.string]
+                if len(nodes_matched_by_bone_name) != 1:
+                    raise Exception('found zero or >1 nodes matching the bone name')
+                bones.append(nodes_matched_by_bone_name[0])
+
+    return bones
+
+
+def get_all_animated_nodes(mdb: Mdb) -> List[Mdb.Node]:
+
+    def get_animation_nodes(animation: Mdb.Animation) -> List[Mdb.AnimationNode]:
+
+        animation_nodes: List[Mdb.AnimationNode] = []
+
+        def add_animation_nodes_recursive(anim_node: Mdb.AnimationNode):
+            animation_nodes.append(anim_node)
+            for anim_child_node in anim_node.children.data:
+                add_animation_nodes_recursive(anim_child_node.data)
+
+        add_animation_nodes_recursive(animation.root_animation_node.data)
+
+        return animation_nodes
+
+    nodes = get_all_nodes(mdb)
+    animations = mdb.animations.animation_array_pointer.data
+
+    animated_nodes: List[Mdb.Node] = []
+
+    for animation in animations:
+        animation_nodes = get_animation_nodes(animation.data)
+        for animation_node in animation_nodes:
+            nodes_matching_by_animated_node_name = [node for node in nodes if node.node_name.string == animation_node.name.string]
+            if len(nodes_matching_by_animated_node_name) != 1:
+                raise Exception('found 0 or >1 nodes matching animated node by name')
+            animated_nodes.append(nodes_matching_by_animated_node_name[0])
+
+    return animated_nodes

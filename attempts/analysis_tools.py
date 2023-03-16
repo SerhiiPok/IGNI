@@ -7,11 +7,6 @@ from collections.abc import Iterable
 import matplotlib
 import matplotlib.pyplot as plt
 
-# mesh rendering
-import pyglet
-from pyglet.gl import GL_TRIANGLES
-from pyglet.model import Model, Material, MaterialGroup
-
 
 def resolve_relative_path(rel_path):
     return os.path.realpath(os.path.join(ROOT, rel_path))

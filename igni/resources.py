@@ -216,7 +216,7 @@ class ResourceType:
         return self._user_validator(file)
 
     def load_resource_data(self, file):
-        return self._loader(file)
+        return self._loader(str(file))
 
     def __str__(self):
         return self.name
@@ -232,26 +232,30 @@ class ResourceType:
                 return True
 
 
-class ResourceTypes:
+def is_mdb_binary(file: File):
+    with open(str(file), 'rb') as f:
+        return not (any([b != 0 for b in f.read(4)]))
 
-    @classmethod
-    def is_mdb_binary(cls, file: File):
-        with open(str(file), 'rb') as f:
-            return not (any([b != 0 for b in f.read(4)]))
+
+def is_not_mdb_binary(file: File):
+    return not is_mdb_binary(file)
+
+
+class ResourceTypes:
 
     MDB = ResourceType(name='mdb',
                        extension='.mdb',
-                       validator=lambda file: ResourceTypes.is_mdb_binary(file),
-                       loader=lambda file: Mdb.from_file(str(file)))
+                       validator=is_mdb_binary,
+                       loader=Mdb.from_file)
 
     MBA = ResourceType(name='mba',
                        extension='.mba',
-                       validator=lambda file: ResourceTypes.is_mdb_binary(file),
-                       loader=lambda file: Mdb.from_file(str(file)))
+                       validator=is_mdb_binary,
+                       loader=Mdb.from_file)
 
     MDBT = ResourceType(name='mdbt',
                         extension='.mdb',
-                        validator=lambda file: not ResourceTypes.is_mdb_binary(file))
+                        validator=is_not_mdb_binary)
 
 
 class Resource:
@@ -277,10 +281,8 @@ class Resource:
         else:
             self.resource_type = resource_type
 
-        self.resource = self.resource_type.load_resource_data(file)
-
     def get(self):
-        return self.resource
+        return self.resource_type.load_resource_data(self.file)
 
 
 class ResourceManager:

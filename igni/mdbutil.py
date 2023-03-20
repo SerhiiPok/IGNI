@@ -1,6 +1,7 @@
 from .mdb import Mdb
 from collections.abc import Iterable
 from typing import List
+import re
 
 '''
 defines a wrapper for kaitai auto-generated Mdb class and some utility functions
@@ -192,43 +193,24 @@ class NodeProperties:
 # a wrapper class for mdb materials
 class Material:
 
-    def __init__(self, material_descr: Mdb.Material, host_node: Mdb.Node = None):
-        if material_descr is None:
-            raise Exception('tried to create material wrapper but material description is None')
-
+    def __init__(self):
         self.shader = ''
         self.textures = {}
         self.bumpmaps = {}
         self.properties = {}
-        self.host_node = host_node
+        self.texture_strings = []
+        self.day_night_transition_string: str = ''
+        self.day_night_light_maps: dict = {}
+        self.light_map_name: str = ''
+        self.host_node = None
 
-        self.parse_data(material_descr.material_spec)
+    @staticmethod
+    def __parse_material_descr__(material_spec: list):
 
-    def is_empty(self):
-        return len(self.shader) == 0 and len(self.textures) == 0 and len(self.bumpmaps) == 0
-
-    def __str__(self):
-        data = {'shader': self.shader,
-                'textures': self.textures,
-                'bumpmaps': self.bumpmaps,
-                'properties': self.properties}
-        return str(data)
-
-    def get_all_textures(self):
-        textures = {key: val for key, val in self.textures.items()}
-        textures.update(self.bumpmaps)
-        return textures
-
-    def as_dict(self):
-        textures = {key: val for key, val in self.textures.items()}
-        textures.update(self.bumpmaps)
-        return {
-            'shader': self.shader,
-            'textures': textures,
-            'parameters': self.properties
-        }
-
-    def parse_data(self, material_spec: list):
+        shader = ''
+        textures = {}
+        bumpmaps = {}
+        properties = {}
 
         def line_clean_up(line):
             return line.replace('\\r\\n', ' ').lstrip().rstrip()
@@ -246,38 +228,132 @@ class Material:
                 if len(parts) != 2:
                     raise Exception('unexpected shader specification: {}'.format(l_))
                 else:
-                    self.shader = parts[1]
+                    shader = parts[1]
 
             elif descriptor == 'texture':
                 if len(parts) != 3:
                     raise Exception('unexpected texture specification: {}'.format(l_))
                 else:
-                    if parts[1] in self.textures:
+                    if parts[1] in textures:
                         raise Exception('duplicated texture found: {}'.format(l_))
-                    self.textures[parts[1]] = parts[2]
+                    textures[parts[1]] = parts[2]
 
             elif descriptor == 'bumpmap':
                 if len(parts) != 3:
                     raise Exception('unexpected bumpmap specification: {}'.format(l_))
                 else:
-                    if parts[1] in self.bumpmaps:
+                    if parts[1] in bumpmaps:
                         raise Exception('duplicated bumpmap found: {}'.format(l_))
-                    self.bumpmaps[parts[1]] = parts[2]
+                    bumpmaps[parts[1]] = parts[2]
 
             elif descriptor == 'float' or descriptor == 'string':
                 if len(parts) != 3:
                     raise Exception('unexpected property specification: {}'.format(l_))
                 else:
-                    self.properties[parts[1]] = parts[2]
+                    properties[parts[1]] = parts[2]
 
             elif descriptor == 'vector':
                 if len(parts) != 6:
                     raise Exception('unexpected vector property specification: {}'.format(l_))
                 else:
-                    self.properties[parts[1]] = (parts[2], parts[3], parts[4], parts[5])
+                    properties[parts[1]] = (parts[2], parts[3], parts[4], parts[5])
 
             else:
                 raise Exception('unexpected material line: {}'.format(l_))
+
+        return shader, textures, bumpmaps, properties
+
+    @staticmethod
+    def __is_probably_a_non_existent_texture__(texture_name: str):
+        if texture_name is None:
+            return True
+
+        texture_name_ = texture_name.lstrip().rstrip().lower()
+        return len(texture_name_) == 0 or texture_name_ in {'null', '_shader_'}
+
+    @staticmethod
+    def __parse_day_night_transition_rules__(transition_rules: str, light_map_name: str = None):
+
+        day_night_light_maps = {}
+
+        if transition_rules.endswith(';'):
+            transition_rules = transition_rules[:-1]
+
+        if not re.match("^(\d{1,2}:00-[A-Za-z!%]+)(;\d{1,2}:00-[A-Za-z!%]+)*$", transition_rules):
+            raise Exception(
+                "can't parse day-night transition rules due to day-night transition string with unexpected format: {}".
+                    format(transition_rules))
+
+        parts = transition_rules.split(sep=';')
+        for part in parts:
+            time, light_map_pattern = part.split(sep='-')
+            if light_map_pattern.lstrip().rstrip().lower() == 'null':
+                continue
+            if '%s' in light_map_pattern:
+                if Material.__is_probably_a_non_existent_texture__(light_map_name):
+                    return {}
+                light_map_pattern = light_map_pattern.replace('%s', light_map_name)
+
+            day_night_light_maps[time] = light_map_pattern
+
+        return day_night_light_maps
+
+    @staticmethod
+    def from_node(node: Mdb.Node):
+
+        if not node.node_type in {Mdb.NodeType.trimesh, Mdb.NodeType.skin}:
+            raise Exception("can't parse material for node type '{}'".format(node.node_type))
+
+        material_description = node.node_data.material.data.material_spec
+        light_map_name = node.node_data.light_map_name.string.lstrip().rstrip()
+        day_night_transition_string = node.node_data.day_night_transition_string.string.lstrip().rstrip()
+
+        material = Material()
+
+        material.day_night_transition_string = day_night_transition_string
+        material.host_node = node
+        material.light_map_name = light_map_name
+
+        material.shader, material.textures, material.bumpmaps, material.properties = Material.__parse_material_descr__(
+            material_description)
+
+        material.day_night_light_maps = Material.__parse_day_night_transition_rules__(day_night_transition_string,
+                                                                                      light_map_name)
+
+        material.texture_strings = [texture_string.string for texture_string in node.node_data.texture_strings
+                                    if not Material.__is_probably_a_non_existent_texture__(texture_string.string)]
+
+        return material
+
+    def is_empty(self):
+        return self == Material()
+
+    def __eq__(self, other):
+        return dict(self) == dict(other)
+
+    def __iter__(self):
+        yield ('shader', self.shader)
+        yield ('textures', self.textures)
+        yield ('bumpmaps', self.bumpmaps)
+        yield ('properties', self.properties)
+        yield ('texture_strings', self.texture_strings)
+        yield ('light_map_name', self.light_map_name)
+        yield ('day_night_light_maps', self.day_night_light_maps)
+        yield ('day_night_transition_string', self.day_night_transition_string)
+
+    def __str__(self):
+        return str(dict(self))
+
+    def get_all_texture_names(self):
+        texture_names = list(self.textures.values())
+        texture_names.extend(list(self.bumpmaps.values()))
+        texture_names.extend(list(self.day_night_light_maps.values()))
+        texture_strings = [texture_string for texture_string in self.texture_strings if texture_string != self.light_map_name]
+        texture_names.extend(texture_strings)
+
+        texture_names = [tn for tn in texture_names if not self.__is_probably_a_non_existent_texture__(tn)]
+
+        return set(texture_names)
 
 
 def print_node_tree(node, print_this=lambda nd: nd.node_name.string):
@@ -315,9 +391,12 @@ class MdbWrapper:
         materials = []
 
         for node in nodes:
-            material = Material(node.node_data.material.data, node)
-            if not material.is_empty():
-                materials.append(material)
+            try:
+                material = Material.from_node(node)
+                if not material.is_empty():
+                    materials.append(material)
+            except Exception:
+                pass  # TODO do something?
 
         return materials
 
@@ -382,13 +461,38 @@ class MdbWrapper:
         self.meshes = [node for node in self.nodes if node.node_type in {Mdb.NodeType.skin, Mdb.NodeType.trimesh}]
 
         # materials
-        all_materials = [Material(node.node_data.material.data) for node in self.meshes]
-        self.materials = [material for material in all_materials if not material.is_empty()]
+        all_materials = []
+        for node in self.meshes:
+            try:
+                material = Material.from_node(node)
+                if not material.is_empty():
+                    all_materials.append(material)
+            except Exception:
+                pass  # TODO log?
+        self.materials = all_materials
+
+        # texture strings
+        texture_strings = []
+        for mesh in self.meshes:
+            [texture_strings.append(texture_string.string) for texture_string in mesh.node_data.texture_strings if len(texture_string.string) != 0]
+        self.texture_strings = texture_strings
 
     def get_node_by(self, eval_expr):
         for node in self.nodes:
             if eval_expr(node):
                 return node
+
+    def get_all_used_texture_names(self):
+
+        all_used_texture_names = []
+
+        for material in self.materials:
+            all_used_texture_names.extend(material.textures.values())
+            all_used_texture_names.extend(material.textures.values())
+
+        all_used_texture_names.extend(self.texture_strings)
+
+        return all_used_texture_names
 
     def get_node_by_name(self, name: str):
         return self.get_node_by(lambda nd: nd.node_name.string == name)

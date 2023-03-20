@@ -112,14 +112,18 @@ class TextureLocatorService:
 
     def __init__(self, mdb_location: Directory):
         self.resource_location_directory = mdb_location
-        self.logger = IgniLogger(TextureLocatorService.__name__)
 
     @classmethod
     def locate_texture(cls, directory: Directory, texture_name: str):
         for extension in cls.TEXTURE_EXTENSIONS:
-            full_path = os.path.join(directory.full_path, texture_name + '.' + extension)
-            if os.path.exists(full_path):
-                return File(full_path)
+            paths_to_check = [
+                os.path.join(directory.full_path, texture_name + '.' + extension),
+                os.path.join(directory.full_path, texture_name.lower() + '.' + extension)  # also check lower case
+            ]
+
+            for path in paths_to_check:
+                if os.path.exists(path):
+                    return File(path)
         return None
 
     def locate(self, texture_name: str):  # TODO
@@ -135,12 +139,23 @@ class TextureLocatorService:
             if texture is not None:
                 break
 
-        if texture is None:
-            self.logger.error('could not locate texture "{}"'.format(texture_name))
-        else:
-            self.logger.debug('located texture "{}"'.format(texture_name))
-
         return texture
+
+
+@picklable
+class TextureConversionResult:
+
+    def __init__(self, converted_texture_path: str):
+
+        self.converted_texture_file = None
+
+        try:
+            self.converted_texture_file = File(converted_texture_path)
+        except Exception:
+            pass
+
+    def successful(self):
+        return self.converted_texture_file is not None
 
 
 @picklable
@@ -206,11 +221,15 @@ class TextureConverterJob:
 
         output_path = os.path.join(self.target_location_.full_path, self.target_fname_ + '.' + self.target_format_)
 
-        try:
-            self.input_.save(filename=output_path)
-        except Exception as e:
-            # self.logger.error('could not write image: {}'.format(e))
-            pass
+        # only if not already exists...
+        if not File.exists(output_path):
+            try:
+                self.input_.save(filename=output_path)
+            except Exception:
+                # self.logger.error('could not write image: {}'.format(e))
+                pass
+
+        return TextureConversionResult(output_path)
 
 
 @picklable
@@ -385,10 +404,13 @@ class FbxFileExportJob:
                                  Trimesh(source_node.node_data))
 
             # --- materials
-            material = Material(source_node.node_data.material.data)
-
-            if material.shader is not None and len(material.shader) > 0:  # TODO proper check
-                self.file_meta['material_count'] += 1
+            material = None
+            try:
+                material = Material.from_node(source_node)
+                if not material.is_empty():
+                    self.file_meta['material_count'] += 1
+            except Exception as e:
+                self.logger.error("exception while parsing material: {}".format(e))
 
             """
             EXPORT_METADATA_REPOSITORY.save_material_spec(
@@ -483,11 +505,11 @@ class Mdb2FbxConversionTaskDispatcher:
                  settings: Settings = Settings()):
 
         self.source = source
-
         # TODO settings system is chaotic
         self.settings = FbxFileExportJob.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
         self.destination = destination
         self.texture_destination = texture_destination
+        self.logger = IgniLogger(Mdb2FbxConversionTaskDispatcher.__name__, settings['logging']) # TODO logging settings do not make any sense
 
     def get_tasks(self):
         """
@@ -504,19 +526,21 @@ class Mdb2FbxConversionTaskDispatcher:
         # export textures
         texture_locator_service = TextureLocatorService(self.source.file.location)
         for material in wrapper.materials:
-            for texture_type, texture_name in material.get_all_textures().items():
-
+            for texture_name in material.get_all_texture_names():
                 texture_file = texture_locator_service.locate(texture_name)
 
                 if texture_file is None and \
                         any([texture_name.endswith(channel_prefix) for channel_prefix in
                              {'_r', '_g', '_b', '_a'}]):  # probably pointer to a specific channel
-                    # TODO logging
+                    self.logger.info('{} probably points to a channel in a texture file'.format(texture_name))
                     texture_file = texture_locator_service.locate(texture_name[0:len(texture_name) - 2])
 
                 if texture_file is None:
-                    # TODO logging
+                    self.logger.context = {'file': self.source.file.full_file_name}
+                    self.logger.error('could not locate texture with name "{}"'.format(texture_name))
                     continue
+                else:
+                    self.logger.info('located texture {}'.format(texture_name))
 
                 tasks.append(
                     TextureConverterJob(self).

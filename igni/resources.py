@@ -49,6 +49,10 @@ class File:
     def __hash__(self):
         return hash(str(self))
 
+    @staticmethod
+    def exists(full_file_path: str):
+        return os.path.exists(full_file_path) and os.path.isfile(full_file_path)
+
     @property
     def size(self):
         if self._size is None:
@@ -57,7 +61,7 @@ class File:
 
     def _init_data_(self, full_file_path: str):
 
-        if os.path.exists(full_file_path) and os.path.isfile(full_file_path):
+        if self.exists(full_file_path):
             self.full_path = full_file_path
         else:
             raise Exception('file path "{}" is invalid'.format(full_file_path))

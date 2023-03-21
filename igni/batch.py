@@ -8,18 +8,18 @@ from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher, TextureC
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from multiprocessing import Queue
-from .logging_util import IgniLogger, Configurer, DEFAULT_LOGGING_SETTINGS
+from .logging_util import Configurer, DEFAULT_LOGGING_SETTINGS
 import logging
 from .app import PersistenceTask
 from .meta_repository import EXPORT_METADATA_REPOSITORY
 
 LOGGING_CONFIGURER = Configurer(DEFAULT_LOGGING_SETTINGS)
+RESOURCE_MANAGER: ResourceManager = None
 FEEDBACK_QUEUE: Queue = None
 
 MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
     'exporter': FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
     'input': {
-        'path': Directory,
         'exclude-files': {
             'starting-with': list,
             'ending-with': list,
@@ -58,12 +58,12 @@ MDB_2_FBX_BATCH_DEFAULT_SETTINGS = Settings({
 
 class Mdb2FbxBatch:
 
-    def __init__(self, settings: Settings = Settings()):
+    def __init__(self,
+                 resource_manager: ResourceManager,
+                 settings: Settings = Settings()):
         self.settings = settings
         self.collection = None
         self.logger = logging.getLogger(Mdb2FbxBatch.__name__)
-
-        resource_manager = ResourceManager(self.settings['input']['path'])
 
         def get_item_filter(batch):
 
@@ -229,6 +229,7 @@ if __name__ == '__main__':
         # EXPORT_METADATA_REPOSITORY.configure(batch_input['repository-path'])
 
         FEEDBACK_QUEUE = multiprocessing.Manager().Queue(-1)
+        RESOURCE_MANAGER = ResourceManager(batch_input['witcher-data'])
         feedback_handler = multiprocessing.Process(target=feedback_handler_fn,
                                                    args=(FEEDBACK_QUEUE,
                                                          EXPORT_METADATA_REPOSITORY.connection,
@@ -238,7 +239,8 @@ if __name__ == '__main__':
         for batch_definition in batch_input['batch']:
 
             if batch_definition['type'] == 'mdb2fbx':
-                Mdb2FbxBatch(Settings(batch_definition['settings']).using_type_hint(MDB_2_FBX_BATCH_SETTINGS_TEMPLATE)).run()
+                Mdb2FbxBatch(RESOURCE_MANAGER,
+                             Settings(batch_definition['settings']).using_type_hint(MDB_2_FBX_BATCH_SETTINGS_TEMPLATE)).run()
             else:
                 raise Exception('unknown batch job type')
 

@@ -188,15 +188,12 @@ class Mdb2FbxBatch:
                 self.logger.error('task execution finished with an exception: ' + str(result))
 
         handled_textures = set()
+        task_dispatcher = Mdb2FbxConversionTaskDispatcher(FEEDBACK_QUEUE, self.settings['exporter'])
 
         with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()-1) as task_pool:
             for resource in self.collection:
                 destination_folder, texture_destination_folder = self._find_destination_folder(resource)
-                tasks = Mdb2FbxConversionTaskDispatcher(resource,
-                                                        destination_folder,
-                                                        texture_destination_folder,
-                                                        FEEDBACK_QUEUE,
-                                                        self.settings['exporter']).get_tasks()
+                tasks = task_dispatcher.get_tasks(resource, destination_folder, texture_destination_folder)
 
                 for task in tasks:
                     if isinstance(task, TextureConverterJob):

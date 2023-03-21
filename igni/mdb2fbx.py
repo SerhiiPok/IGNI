@@ -499,40 +499,43 @@ class Mdb2FbxConversionTaskDispatcher:
     """
 
     def __init__(self,
-                 source: Resource,
-                 destination: Directory,
-                 texture_destination: Directory,
                  feedback_queue: Queue,
                  settings: Settings = Settings()):
 
-        self.source = source
         self.feedback_queue = feedback_queue
-        # TODO settings system is chaotic
         self.settings = FbxFileExportJob.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
-        self.destination = destination
-        self.texture_destination = texture_destination
         self.logger = logging.getLogger(Mdb2FbxConversionTaskDispatcher.__name__)
+        self.handled_texture_names = set()
 
-    def get_tasks(self):
+    def get_tasks(self,
+                  source: Resource,
+                  destination: Directory,
+                  texture_destination: Directory):
         """
         :return: a list of tasks that should be executed to convert an mdb to an fbx
         """
 
         tasks = []
 
-        wrapper = MdbWrapper(self.source.get())
+        wrapper = MdbWrapper(source.get())
 
         # export fbx file
-        tasks.append(FbxFileExportJob(self.source,
-                                      self.destination,
-                                      self.texture_destination,
+        tasks.append(FbxFileExportJob(source,
+                                      destination,
+                                      texture_destination,
                                       self.feedback_queue,
                                       self.settings))
 
         # export textures
-        texture_locator_service = TextureLocatorService(self.source.file.location)
+        texture_locator_service = TextureLocatorService(source.file.location)
         for material in wrapper.materials:
             for texture_name in material.get_all_texture_names():
+
+                if texture_name in self.handled_texture_names:
+                    continue
+                else:
+                    self.handled_texture_names.add(texture_name)
+
                 texture_file = texture_locator_service.locate(texture_name)
 
                 if texture_file is None and \
@@ -555,7 +558,7 @@ class Mdb2FbxConversionTaskDispatcher:
                         input(texture_file).
                         target_fname(texture_name).
                         target_format(self.settings['texture-conversion']['format']).
-                        target_dir(self.texture_destination)
+                        target_dir(texture_destination)
                 )
 
         return tasks

@@ -4,10 +4,17 @@ import yaml
 
 from .resources import Directory, ResourceType, ResourceManager, ResourceTypes, Resource
 from .settings import Settings
-from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher
+from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher, TextureConverterJob
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
-from .logging_util import IgniLogger
+from multiprocessing import Queue
+from .logging_util import IgniLogger, Configurer, DEFAULT_LOGGING_SETTINGS
+import logging
+from .app import PersistenceTask
+from .meta_repository import EXPORT_METADATA_REPOSITORY
+
+LOGGING_CONFIGURER = Configurer(DEFAULT_LOGGING_SETTINGS)
+FEEDBACK_QUEUE: Queue = None
 
 MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
     'exporter': FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
@@ -23,9 +30,6 @@ MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
             'ending-with': list,
             'containing': list
         }
-    },
-    'logging': {
-        'level': {'DEBUG', 'INFO', 'WARN', 'ERROR'}
     },
     'destination': {
         'model': {
@@ -57,7 +61,7 @@ class Mdb2FbxBatch:
     def __init__(self, settings: Settings = Settings()):
         self.settings = settings
         self.collection = None
-        self._logger: IgniLogger = None
+        self.logger = logging.getLogger(Mdb2FbxBatch.__name__)
 
         resource_manager = ResourceManager(self.settings['input']['path'])
 
@@ -101,14 +105,6 @@ class Mdb2FbxBatch:
             return do_filter
 
         self.collection = resource_manager.get_all_of_type((ResourceTypes.MDB, ResourceTypes.MBA), get_item_filter(self))
-
-    @property
-    def logger(self):
-        if self._logger is not None:
-            return self._logger
-
-        self._logger = IgniLogger(Mdb2FbxBatch.__name__, self.settings['logging'])
-        return self._logger
 
     def _find_in_collection_by_name_root_and_resource_type(self, name_root: str, resource_type: ResourceType):
         found_items = [resource for resource in self.collection if name_root == resource.file.name_root]
@@ -184,19 +180,43 @@ class Mdb2FbxBatch:
     def run(self):
 
         def handle_task_result(result):
+            if result.exception() is not None:
+                self.logger.error('EXCEPTION WHEN EXPORTING FBX: ' + str(result.exception()))
             if result.result() is not None:
                 self.logger.error('type of the result is: ' + str(type(result.result())))
             if isinstance(result, Exception):
                 self.logger.error('task execution finished with an exception: ' + str(result))
 
-        with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()) as task_pool:
+        handled_textures = set()
+
+        with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()-1) as task_pool:
             for resource in self.collection:
                 destination_folder, texture_destination_folder = self._find_destination_folder(resource)
-                [task_pool.submit(task).add_done_callback(handle_task_result) for task in
-                 Mdb2FbxConversionTaskDispatcher(resource,
-                                                 destination_folder,
-                                                 texture_destination_folder,
-                                                 self.settings['exporter']).get_tasks()]
+                tasks = Mdb2FbxConversionTaskDispatcher(resource,
+                                                        destination_folder,
+                                                        texture_destination_folder,
+                                                        FEEDBACK_QUEUE,
+                                                        self.settings['exporter']).get_tasks()
+
+                for task in tasks:
+                    if isinstance(task, TextureConverterJob):
+                        if task.target_fname_ in handled_textures:
+                            continue
+                        else:
+                            handled_textures.add(task.target_fname_)
+                    task_pool.submit(task).add_done_callback(handle_task_result)
+
+
+def feedback_handler_fn(feedback_queue: Queue, connection, logging_settings):
+    logging.config.dictConfig(logging_settings)
+    while True:
+        if not feedback_queue.empty():
+            feedback = feedback_queue.get()
+            if isinstance(feedback, logging.LogRecord):
+                logger = logging.getLogger(feedback.name)
+                logger.handle(feedback)
+            elif isinstance(feedback, PersistenceTask):
+                feedback.data.to_sql(feedback.dest, connection)
 
 
 if __name__ == '__main__':
@@ -206,9 +226,25 @@ if __name__ == '__main__':
     with open(config_path, 'r') as stream:
         batch_input = yaml.safe_load(stream)
 
+        if 'logging' in batch_input:
+            logging.config.dictConfig(batch_input['logging'])
+
+        # EXPORT_METADATA_REPOSITORY.configure(batch_input['repository-path'])
+
+        FEEDBACK_QUEUE = multiprocessing.Manager().Queue(-1)
+        feedback_handler = multiprocessing.Process(target=feedback_handler_fn,
+                                                   args=(FEEDBACK_QUEUE,
+                                                         EXPORT_METADATA_REPOSITORY.connection,
+                                                         batch_input['logging']))
+        feedback_handler.start()
+
         for batch_definition in batch_input['batch']:
 
             if batch_definition['type'] == 'mdb2fbx':
                 Mdb2FbxBatch(Settings(batch_definition['settings']).using_type_hint(MDB_2_FBX_BATCH_SETTINGS_TEMPLATE)).run()
             else:
                 raise Exception('unknown batch job type')
+
+        while not FEEDBACK_QUEUE.empty():
+            pass
+        feedback_handler.kill()

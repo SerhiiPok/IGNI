@@ -1,6 +1,23 @@
-from logging import Logger as Logger_, Formatter, FileHandler, StreamHandler
+from logging import Logger as Logger_, Formatter, FileHandler, StreamHandler, config
 from typing import Any
 from .settings import Settings
+
+
+DEFAULT_LOGGING_SETTINGS = {
+    # TODO
+}
+
+
+class Configurer:
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    def configure(self):
+        config.dictConfig(self.settings)
+
+    def __call__(self):
+        self.configure()
 
 
 # custom logger class for the igni modules

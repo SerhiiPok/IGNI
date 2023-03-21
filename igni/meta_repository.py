@@ -82,8 +82,8 @@ class ExportMetadataRepository:
         self.connection.commit()
         return cursor
 
-    def configure(self, db_path, logger_settings: Settings):
-        self.logger = IgniLogger(ExportMetadataRepository.__name__, logger_settings)
+    def configure(self, db_path):
+        self.logger = None
 
         if self.connection is not None:
             self.connection.close()

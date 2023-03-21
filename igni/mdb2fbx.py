@@ -5,18 +5,17 @@ import sys
 from .settings import Settings
 from .resources import Directory, File, Resource, ResourceTypes
 from .mdbutil import MdbWrapper, Material, Trimesh, NodeProperties
-from .logging_util import IgniLogger
-from .meta_repository import EXPORT_METADATA_REPOSITORY
-from .task_execution import AsyncTaskExecutor
-from squaternion import Quaternion
 from scipy.spatial.transform import Rotation
-
-LOGGER = IgniLogger(__name__)
+from .app import Task
+from multiprocessing import Queue
+import logging
 
 try:
     from wand import image
 except Exception as e:
+    '''
     LOGGER.error('could not import "image" from "wand", please, check wand installation, error message: {}'.format(str(e)))
+    '''
     image = None
 
 MEMORY_MANAGER = fbx.FbxManager.Create()
@@ -159,17 +158,19 @@ class TextureConversionResult:
 
 
 @picklable
-class TextureConverterJob:
+class TextureConverterJob(Task):
 
     """
     this class handles the logic of conversion of textures from arbitrary formats into arbitrary formats
     """
 
-    def __init__(self, mdb2fbx_converter_reference):
-        # self.logger = IgniLogger(TextureConverterJob.__name__)
+    def __init__(self,
+                 feedback_queue: Queue):
+
+        super().__init__(feedback_queue)
 
         if image is None:
-            # self.logger.error('could not create texture converter instance because wand is not properly installed')
+            self.logger.error('could not create texture converter instance because wand is not properly installed')
             self.invalid = True
             return
 
@@ -207,7 +208,7 @@ class TextureConverterJob:
         if self.input is None or self.target_location_ is None \
                 or self.target_fname_ is None or len(self.target_fname_) == 0\
                 or self.target_format_ is None or len(self.target_format_) == 0:
-            # self.logger.error("can't execute texture conversion job with incomplete description")
+            self.logger.error("can't execute texture conversion job with incomplete description")
             self.invalid = True
 
         if self.invalid:
@@ -216,7 +217,9 @@ class TextureConverterJob:
         try:
             self.input_ = image.Image(filename=self.input_)
         except Exception as e:
-            # self.logger.error('could not load input image "{}", error message: {}'.format(inp, e))
+            '''
+            self.logger.error('could not load input image "{}", error message: {}'.format(inp, e))
+            '''
             self.invalid = True
 
         output_path = os.path.join(self.target_location_.full_path, self.target_fname_ + '.' + self.target_format_)
@@ -226,14 +229,14 @@ class TextureConverterJob:
             try:
                 self.input_.save(filename=output_path)
             except Exception:
-                # self.logger.error('could not write image: {}'.format(e))
+                self.logger.error('could not write image: {}'.format(e))
                 pass
 
         return TextureConversionResult(output_path)
 
 
 @picklable
-class FbxFileExportJob:
+class FbxFileExportJob(Task):
 
     MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = Settings({
         'texture-conversion': {
@@ -243,7 +246,6 @@ class FbxFileExportJob:
             'if-name-contains': list,
             'of-type': list
         },
-        'logging': IgniLogger.LOGGING_SETTINGS_TEMPLATE,
         'unit-conversion-factor': float,
         'flip-uvs': bool,
         'repository-path': str,
@@ -257,7 +259,6 @@ class FbxFileExportJob:
         'skip-nodes': {
             'if-name-contains': ['shadow', 'Shadow']
         },
-        'logging': IgniLogger.LOGGING_DEFAULT_SETTINGS,
         'unit-conversion-factor': 100.0,
         'flip-uvs': True,
         'coordinate-system': CoordinateSystemService.COORDINATE_SYSTEM_SETTINGS_DEFAULT_SETTINGS
@@ -267,7 +268,11 @@ class FbxFileExportJob:
                  source: Resource,
                  destination: Directory,  # can be None if no export intended
                  texture_destination: Directory,  # can be None if no export intended
+                 feedback_queue: Queue,
                  settings: Settings = Settings()):
+
+        super().__init__(feedback_queue)
+
         assert (source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)
 
         self.source: Resource = source
@@ -276,7 +281,6 @@ class FbxFileExportJob:
         self.settings: Settings = self.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(self.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
         self.texture_export_jobs = []
         self.context = None
-        self._logger = None
         self.file_meta = {
             'file': self.source.file.name,
             'node_count': 0,
@@ -287,14 +291,6 @@ class FbxFileExportJob:
             'tri_count': 0
         }
         self.coord_service = CoordinateSystemService(self.settings['coordinate-system'])
-
-    @property
-    def logger(self):
-        if self._logger is not None:
-            return self._logger
-
-        self._logger = IgniLogger(FbxFileExportJob.__name__, self.settings['logging'])
-        return self._logger
 
     def debug_log_trimesh(self, trimesh: Trimesh):
 
@@ -427,11 +423,13 @@ class FbxFileExportJob:
         def recursive_add_nodes(source_nodes, under_parent: fbx.FbxNode):
             for source_node in source_nodes:
 
+                '''
                 self.logger.context = {
                     'source_object': source_node,
                     'source_object_type': source_node.node_type.name,
                     'source_object_name': source_node.node_name.string
                 }
+                '''
 
                 skip_containing_words = self.settings.get('skip-nodes.if-name-contains', default=[])
 
@@ -444,7 +442,9 @@ class FbxFileExportJob:
                 under_parent.AddChild(fbx_node)
                 self._build_fbx_node(fbx_node, source_node, fbx_scene)
 
+                '''
                 self.logger.context = None
+                '''
 
                 recursive_add_nodes(
                     [child_ptr.data for child_ptr in source_node.children.data],
@@ -502,14 +502,16 @@ class Mdb2FbxConversionTaskDispatcher:
                  source: Resource,
                  destination: Directory,
                  texture_destination: Directory,
+                 feedback_queue: Queue,
                  settings: Settings = Settings()):
 
         self.source = source
+        self.feedback_queue = feedback_queue
         # TODO settings system is chaotic
         self.settings = FbxFileExportJob.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
         self.destination = destination
         self.texture_destination = texture_destination
-        self.logger = IgniLogger(Mdb2FbxConversionTaskDispatcher.__name__, settings['logging']) # TODO logging settings do not make any sense
+        self.logger = logging.getLogger(Mdb2FbxConversionTaskDispatcher.__name__)
 
     def get_tasks(self):
         """
@@ -521,7 +523,11 @@ class Mdb2FbxConversionTaskDispatcher:
         wrapper = MdbWrapper(self.source.get())
 
         # export fbx file
-        tasks.append(FbxFileExportJob(self.source, self.destination, self.texture_destination, self.settings))
+        tasks.append(FbxFileExportJob(self.source,
+                                      self.destination,
+                                      self.texture_destination,
+                                      self.feedback_queue,
+                                      self.settings))
 
         # export textures
         texture_locator_service = TextureLocatorService(self.source.file.location)
@@ -536,14 +542,16 @@ class Mdb2FbxConversionTaskDispatcher:
                     texture_file = texture_locator_service.locate(texture_name[0:len(texture_name) - 2])
 
                 if texture_file is None:
+                    '''
                     self.logger.context = {'file': self.source.file.full_file_name}
+                    '''
                     self.logger.error('could not locate texture with name "{}"'.format(texture_name))
                     continue
                 else:
                     self.logger.info('located texture {}'.format(texture_name))
 
                 tasks.append(
-                    TextureConverterJob(self).
+                    TextureConverterJob(self.feedback_queue).
                         input(texture_file).
                         target_fname(texture_name).
                         target_format(self.settings['texture-conversion']['format']).

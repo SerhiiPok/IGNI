@@ -3,7 +3,7 @@ import os
 import fbx
 import sys
 from .settings import Settings
-from .resources import Directory, File, Resource, ResourceTypes
+from .resources import Directory, File, Resource, ResourceTypes, ResourceManager
 from .mdbutil import MdbWrapper, Material, Trimesh, NodeProperties
 from scipy.spatial.transform import Rotation
 from .app import Task
@@ -99,6 +99,76 @@ class CoordinateSystemService:
 
 
 class TextureLocatorService:
+
+    def locate(self, texture_name: str):
+        raise Exception('not implemented')
+
+
+class ResourceManagerTextureLocatorService:
+
+    POSSIBLE_TEXTURE_EXTENSIONS = [
+        'bmp',
+        'dds',
+        'ico',
+        'jpg',
+        'txi'
+    ]
+
+    def __init__(self, resource_manager: ResourceManager):
+        self.resource_manager = resource_manager
+        self.logger = logging.getLogger(type(self).__name__)
+
+    @staticmethod
+    def __likely_has_suffix__(texture_name):
+        if len(texture_name) < 2:
+            return False
+        return texture_name[-2] == '_'
+
+    @staticmethod
+    def __without_suffix__(texture_name):
+        if len(texture_name) < 2:
+            return texture_name
+        else:
+            return texture_name[0:-2]
+
+    def __locate__(self, texture_name: str, candidates: list):
+        if len(candidates) == 0:
+            return None
+
+        qualifying = [file for file in candidates if file.extension in self.POSSIBLE_TEXTURE_EXTENSIONS]
+        if len(qualifying) == 0:
+            return None
+        elif len(qualifying) > 1:
+            self.logger.warning('more than one qualifying texture found for texture name {}'.format(texture_name))
+            return qualifying[0]
+        else:
+            return qualifying[0]
+
+    def locate(self, texture_name: str):
+
+        attempted_names = []
+        result = None
+
+        names_to_attempt = [texture_name, texture_name.lower()]
+        if self.__likely_has_suffix__(texture_name):
+            names_to_attempt.append(self.__without_suffix__(texture_name))
+            names_to_attempt.append(self.__without_suffix__(texture_name).lower())
+
+        for name_to_attempt in names_to_attempt:
+            attempted_names.append(name_to_attempt)
+            result = self.__locate__(name_to_attempt, self.resource_manager.get_by_file_name(name_to_attempt))
+            if result is not None:
+                break
+
+        if result is not None:
+            self.logger.debug('located texture with name {}, attempted names: {}'.format(texture_name, attempted_names))
+        else:
+            self.logger.error('could not locate texture with name {}, attempted names: {}'.format(texture_name, attempted_names))
+
+        return result
+
+
+class FileSystemTextureLocatorService(TextureLocatorService):
 
     """
     this class locates a texture by its name by means of searching specific folders in game contents
@@ -499,9 +569,13 @@ class Mdb2FbxConversionTaskDispatcher:
     """
 
     def __init__(self,
+                 texture_locator_service: TextureLocatorService,
+                 resource_manager: ResourceManager,
                  feedback_queue: Queue,
                  settings: Settings = Settings()):
 
+        self.texture_locator_service: TextureLocatorService = texture_locator_service
+        self.resource_manager = resource_manager
         self.feedback_queue = feedback_queue
         self.settings = FbxFileExportJob.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
         self.logger = logging.getLogger(Mdb2FbxConversionTaskDispatcher.__name__)
@@ -527,8 +601,17 @@ class Mdb2FbxConversionTaskDispatcher:
                                       self.settings))
 
         # export textures
-        texture_locator_service = TextureLocatorService(source.file.location)
         for material in wrapper.materials:
+
+            if len(material.material_file_pointer) > 0:
+                material_resource = self.resource_manager.get(material.material_file_pointer, ResourceTypes.MAT)
+                if material_resource is None:
+                    self.logger.error('material is pointing to a material file {} but could locate none'.format(
+                        material.material_file_pointer))
+                else:
+                    self.logger.debug('reading from material file {}'.format(material.material_file_pointer))
+                    material.read_material_file(material_resource.file)
+
             for texture_name in material.get_all_texture_names():
 
                 if texture_name in self.handled_texture_names:
@@ -536,22 +619,9 @@ class Mdb2FbxConversionTaskDispatcher:
                 else:
                     self.handled_texture_names.add(texture_name)
 
-                texture_file = texture_locator_service.locate(texture_name)
-
-                if texture_file is None and \
-                        any([texture_name.endswith(channel_prefix) for channel_prefix in
-                             {'_r', '_g', '_b', '_a'}]):  # probably pointer to a specific channel
-                    self.logger.info('{} probably points to a channel in a texture file'.format(texture_name))
-                    texture_file = texture_locator_service.locate(texture_name[0:len(texture_name) - 2])
-
+                texture_file = self.texture_locator_service.locate(texture_name)
                 if texture_file is None:
-                    '''
-                    self.logger.context = {'file': self.source.file.full_file_name}
-                    '''
-                    self.logger.error('could not locate texture with name "{}"'.format(texture_name))
                     continue
-                else:
-                    self.logger.info('located texture {}'.format(texture_name))
 
                 tasks.append(
                     TextureConverterJob(self.feedback_queue).

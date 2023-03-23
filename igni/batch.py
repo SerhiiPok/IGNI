@@ -4,7 +4,7 @@ import yaml
 
 from .resources import Directory, ResourceType, ResourceManager, ResourceTypes, Resource
 from .settings import Settings
-from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher, TextureConverterJob
+from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher, TextureConverterJob, ResourceManagerTextureLocatorService
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from multiprocessing import Queue
@@ -188,7 +188,10 @@ class Mdb2FbxBatch:
                 self.logger.error('task execution finished with an exception: ' + str(result))
 
         handled_textures = set()
-        task_dispatcher = Mdb2FbxConversionTaskDispatcher(FEEDBACK_QUEUE, self.settings['exporter'])
+        task_dispatcher = Mdb2FbxConversionTaskDispatcher(ResourceManagerTextureLocatorService(RESOURCE_MANAGER),
+                                                          RESOURCE_MANAGER,
+                                                          FEEDBACK_QUEUE,
+                                                          self.settings['exporter'])
 
         with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()-1) as task_pool:
             for resource in self.collection:

@@ -2,6 +2,7 @@ from .mdb import Mdb
 from collections.abc import Iterable
 from typing import List
 import re
+from .resources import Resource, ResourceTypes
 
 '''
 defines a wrapper for kaitai auto-generated Mdb class and some utility functions
@@ -203,6 +204,7 @@ class Material:
         self.day_night_light_maps: dict = {}
         self.light_map_name: str = ''
         self.host_node = None
+        self.material_file_pointer = ''
 
     @staticmethod
     def __parse_material_descr__(material_spec: list):
@@ -269,7 +271,7 @@ class Material:
             return True
 
         texture_name_ = texture_name.lstrip().rstrip().lower()
-        return len(texture_name_) == 0 or texture_name_ in {'null', '_shader_'}
+        return len(texture_name_) == 0 or texture_name_ in {'null', '_shader_', '(null)'}
 
     @staticmethod
     def __parse_day_night_transition_rules__(transition_rules: str, light_map_name: str = None):
@@ -320,10 +322,22 @@ class Material:
         material.day_night_light_maps = Material.__parse_day_night_transition_rules__(day_night_transition_string,
                                                                                       light_map_name)
 
-        material.texture_strings = [texture_string.string for texture_string in node.node_data.texture_strings
+        # parse texture strings
+        texture_strings = [texture_string.string for texture_string in node.node_data.texture_strings
                                     if not Material.__is_probably_a_non_existent_texture__(texture_string.string)]
 
+        if len(texture_strings) > 0:
+            if texture_strings[0] == '_shader_':
+                material.material_file_pointer = texture_strings[1]
+            else:
+                material.texture_strings = texture_strings
+
         return material
+
+    def read_material_file(self, material_resource: Resource):
+        if material_resource.resource_type != ResourceTypes.MAT:
+            raise Exception("can't read from material file which is not of type 'mat'")
+        self.shader, self.textures, self.bumpmaps, self.properties = self.__parse_material_descr__(material_resource.get())
 
     def is_empty(self):
         return self == Material()

@@ -245,6 +245,11 @@ def is_not_mdb_binary(file: File):
     return not is_mdb_binary(file)
 
 
+def read_lines(file_path: str):
+    with open(file_path, 'r') as f:
+        return f.readlines()
+
+
 class ResourceTypes:
 
     MDB = ResourceType(name='mdb',
@@ -260,6 +265,10 @@ class ResourceTypes:
     MDBT = ResourceType(name='mdbt',
                         extension='.mdb',
                         validator=is_not_mdb_binary)
+
+    MAT = ResourceType(name='mat',
+                       extension='.mat',
+                       loader=read_lines)
 
 
 class Resource:
@@ -297,6 +306,13 @@ class ResourceManager:
         else:
             self.root_directory = Directory(root_dir)
         self.files = self.root_directory.collect_files()
+
+        self.file_hash = {}
+        for file in self.files:
+            if file.name in self.file_hash:
+                self.file_hash[file.name].append(file)
+            else:
+                self.file_hash[file.name] = [file]
 
     def get_all_of_type(self, resource_types, filterer=None):
 
@@ -340,7 +356,7 @@ class ResourceManager:
         return list(set([file.file_name_prefix for file in files]))
 
     def get(self, name: str, resource_type: ResourceType) -> Resource:
-        results = [f for f in self.files if f.full_file_name == name and resource_type.validate(str(f))]
+        results = [result for result in self.file_hash.get(name, []) if resource_type.validate(result)]
         if len(results) > 1:
             raise Exception('more than one resource with name {} and type {} was found'.format(name, resource_type.name))
 
@@ -348,7 +364,7 @@ class ResourceManager:
             return Resource(results[0])
 
     def get_by_file_name(self, file_name: str):
-        return [Resource(file) for file in self.files if file.full_file_name == file_name]
+        return self.file_hash.get(file_name, [])
 
     def get_by_file_name_pattern(self, file_name_pattern: re.Pattern):
         return [Resource(file) for file in self.root_directory.search(file_name_pattern)]

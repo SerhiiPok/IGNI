@@ -23,3 +23,11 @@ class Task:
             self._logger.setLevel(logging.ERROR)
             self._logger.addHandler(queue_handler)
         return self._logger
+
+
+class ApplicationShutdownTask(Task):
+
+    def __init__(self, global_events_queue: Queue):
+        Task.__init__(self, global_events_queue)
+        self.logger.error('APPLICATION_SHUTDOWN')
+

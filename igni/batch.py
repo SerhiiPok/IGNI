@@ -12,6 +12,7 @@ from multiprocessing import Queue
 from .logging_util import Configurer, DEFAULT_LOGGING_SETTINGS
 import logging
 from .meta_repository import create_meta_db
+from .app import ApplicationShutdownTask
 
 LOGGING_CONFIGURER = Configurer(DEFAULT_LOGGING_SETTINGS)
 RESOURCE_MANAGER: ResourceManager = None
@@ -205,6 +206,8 @@ class Mdb2FbxBatch:
                         else:
                             handled_textures.add(task.target_fname_)
                     task_pool.submit(task).add_done_callback(handle_task_result)
+
+            task_pool.submit(ApplicationShutdownTask(GLOBAL_EVENTS_QUEUE))
 
 
 def feedback_handler_fn(global_events_queue: Queue, connection_path: str, logging_settings):

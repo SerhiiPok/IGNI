@@ -1,6 +1,8 @@
-from logging import Logger as Logger_, Formatter, FileHandler, StreamHandler, config
-from typing import Any
+from logging import config
+import logging
 from .settings import Settings
+import sqlite3
+import pandas
 
 
 DEFAULT_LOGGING_SETTINGS = {
@@ -20,82 +22,35 @@ class Configurer:
         self.configure()
 
 
-# custom logger class for the igni modules
-class IgniLogger(Logger_):
+class DatabaseHandler(logging.Handler):
 
-    LOGGING_SETTINGS_TEMPLATE = Settings({
-        'level': {'DEBUG', 'INFO', 'WARN', 'ERROR', 'CRITICAL'},
-        'appender': {
-            'type': {'STDOUT', 'FILE'},
-            'output-file': str,
-            'output-file-writing-mode': {'append', 'overwrite'},
-            'format': str
+    def __init__(self, connection_path=None):
+        logging.Handler.__init__(self)
+        self.connection = None
+        self.log_data = []
+        if connection_path is not None:
+            self.connection = sqlite3.connect(connection_path)
+
+    def setConnectionPath(self, connection_path):
+        self.connection = sqlite3.connect(connection_path)
+
+    def emit(self, record):
+
+        dt = {
+            'timestamp': record.created,
+            'level': record.levelname,
+            'process_id': record.process,
+            'thread_id': record.thread,
+            'logger': record.name,
+            'file': record.filename,
+            'function': record.funcName,
+            'line': record.lineno,
+            'message': record.msg,
+            'args': str(record.args)
         }
-    })
 
-    LOGGING_DEFAULT_SETTINGS = Settings({
-        'level': 'INFO',
-        'appender': {
-            'type': 'STDOUT',
-            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        }
-    })
+        self.log_data.append(dt)
 
-    def __init__(self, name: str, settings: Settings = Settings()):
-        super().__init__(name, 'DEBUG')
-
-        # -- logging settings
-        self.settings = self.LOGGING_DEFAULT_SETTINGS
-        if len(settings) > 0:
-            self.settings.read_dict(settings).using_type_hint(self.LOGGING_SETTINGS_TEMPLATE)
-
-        self.setLevel(self.settings['level'])
-        logging_formatter = Formatter(self.settings['appender']['format'])
-        handler = None
-
-        if self.settings['appender']['type'] == 'FILE':
-            handler = FileHandler(
-                self.settings['appender']['output-file'],
-                'a' if self.settings['appender']['output-file-writing-mode'] == 'append' else 'w'
-            )
-        elif self.settings['appender']['type'] == 'STDOUT':
-            handler = StreamHandler()
-
-        handler.setLevel(self.settings['level'])
-        handler.setFormatter(logging_formatter)
-        self.addHandler(handler)
-        # --
-
-        self.context = {}  # arbitrary key-value pairs describing logging context, are written in the logged message
-        self.input_file = None  # optional path to a file associated with an igni process, is written in the logged message
-
-    def __decorate_message_with_context_info__(self, message):
-
-        message_object = {'msg': message}
-
-        if self.input_file is not None:
-            message_object['input'] = str(self.input_file)
-
-        if self.context is not None and isinstance(self.context, dict):
-            message_object['context'] = self.context
-
-        return str(message_object)
-
-    def debug(self, msg: Any, *args: Any, **kwargs: Any):
-        super().debug(self.__decorate_message_with_context_info__(msg), *args, **kwargs)
-
-    def info(self, msg: Any, *args: Any, **kwargs: Any):
-        super().info(self.__decorate_message_with_context_info__(msg), *args, **kwargs)
-
-    def warning(self, msg: Any, *args: Any, **kwargs: Any):
-        super().warning(self.__decorate_message_with_context_info__(msg), *args, **kwargs)
-
-    def warn(self, msg: Any, *args: Any, **kwargs: Any):
-        super().warn(self.__decorate_message_with_context_info__(msg), *args, **kwargs)
-
-    def error(self, msg: Any, *args: Any, **kwargs: Any):
-        super().error(self.__decorate_message_with_context_info__(msg), *args, **kwargs)
-
-    def critical(self, msg: Any, *args: Any, **kwargs: Any):
-        super().critical(self.__decorate_message_with_context_info__(msg), *args, **kwargs)
-
+        if 'APPLICATION_SHUTDOWN' in dt['message']:
+            pandas.DataFrame(self.log_data).to_sql('log', self.connection, if_exists='append', index=False)
+            self.log_data = []

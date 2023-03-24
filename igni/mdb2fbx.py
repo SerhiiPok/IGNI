@@ -9,6 +9,8 @@ from scipy.spatial.transform import Rotation
 from .app import Task
 from multiprocessing import Queue
 import logging
+from collections import namedtuple
+import pandas
 
 try:
     from wand import image
@@ -33,6 +35,9 @@ MODULE_CLOSE_INTERCEPTOR = OnModuleClose()
 # annotation
 def picklable(fun):
     return fun
+
+
+MetaDataPersistenceTask = namedtuple('MetaDataPersistenceTask', ['table_name', 'dataset'])
 
 
 class CoordinateSystemService:
@@ -235,9 +240,9 @@ class TextureConverterJob(Task):
     """
 
     def __init__(self,
-                 feedback_queue: Queue):
+                 global_events_queue: Queue):
 
-        super().__init__(feedback_queue)
+        super().__init__(global_events_queue)
 
         if image is None:
             self.logger.error('could not create texture converter instance because wand is not properly installed')
@@ -308,6 +313,9 @@ class TextureConverterJob(Task):
 @picklable
 class FbxFileExportJob(Task):
 
+    FILE_META_TABLE_NAME = 'file_meta'
+    NODE_META_TABLE_NAME = 'node_meta'
+
     MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = Settings({
         'texture-conversion': {
             'format': {'png', 'jpg', 'leave-as-is'}
@@ -338,10 +346,10 @@ class FbxFileExportJob(Task):
                  source: Resource,
                  destination: Directory,  # can be None if no export intended
                  texture_destination: Directory,  # can be None if no export intended
-                 feedback_queue: Queue,
+                 global_events_queue: Queue,
                  settings: Settings = Settings()):
 
-        super().__init__(feedback_queue)
+        super().__init__(global_events_queue)
 
         assert (source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)
 
@@ -351,6 +359,7 @@ class FbxFileExportJob(Task):
         self.settings: Settings = self.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(self.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
         self.texture_export_jobs = []
         self.context = None
+
         self.file_meta = {
             'file': self.source.file.name,
             'node_count': 0,
@@ -360,6 +369,8 @@ class FbxFileExportJob(Task):
             'animation_count': 0,
             'tri_count': 0
         }
+        self.node_meta = []
+
         self.coord_service = CoordinateSystemService(self.settings['coordinate-system'])
 
     def debug_log_trimesh(self, trimesh: Trimesh):
@@ -442,12 +453,11 @@ class FbxFileExportJob(Task):
 
     def _build_fbx_node(self, fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
 
-        """
-        EXPORT_METADATA_REPOSITORY.save_mdb_node_meta(
-            self.source.file.name,
-            source_node.node_name.string,
-            source_node.node_type.name)
-        """
+        self.node_meta.append({
+            'file': self.source.file.name,
+            'node_name': source_node.node_name.string,
+            'node_type': source_node.node_type.name
+        })
         self.file_meta['node_count'] += 1
 
         self.logger.debug('start building fbx node')
@@ -470,20 +480,12 @@ class FbxFileExportJob(Task):
                                  Trimesh(source_node.node_data))
 
             # --- materials
-            material = None
             try:
                 material = Material.from_node(source_node)
                 if not material.is_empty():
                     self.file_meta['material_count'] += 1
             except Exception as e:
                 self.logger.error("exception while parsing material: {}".format(e))
-
-            """
-            EXPORT_METADATA_REPOSITORY.save_material_spec(
-                self.source.file.name,
-                source_node.node_name.string,
-                material.as_dict())
-            """
 
         else:
             self.logger.debug('node type is not handled, it has been added to scene but its data wont be built')
@@ -492,14 +494,6 @@ class FbxFileExportJob(Task):
 
         def recursive_add_nodes(source_nodes, under_parent: fbx.FbxNode):
             for source_node in source_nodes:
-
-                '''
-                self.logger.context = {
-                    'source_object': source_node,
-                    'source_object_type': source_node.node_type.name,
-                    'source_object_name': source_node.node_name.string
-                }
-                '''
 
                 skip_containing_words = self.settings.get('skip-nodes.if-name-contains', default=[])
 
@@ -525,15 +519,12 @@ class FbxFileExportJob(Task):
         recursive_add_nodes([child_ptr.data for child_ptr in source.root_node.children.data],
                             fbx_scene.GetRootNode())
 
-        """
-        EXPORT_METADATA_REPOSITORY.save_mdb_file_meta(self.file_meta['file'],
-                                                      self.file_meta['node_count'],
-                                                      self.file_meta['mesh_count'],
-                                                      self.file_meta['material_count'],
-                                                      self.file_meta['bone_count'],
-                                                      self.file_meta['animation_count'],
-                                                      self.file_meta['tri_count'])
-        """
+        self.global_events_queue.put(
+            MetaDataPersistenceTask(self.FILE_META_TABLE_NAME, pandas.DataFrame([self.file_meta]))
+        )
+        self.global_events_queue.put(
+            MetaDataPersistenceTask(self.NODE_META_TABLE_NAME, pandas.DataFrame(self.node_meta))
+        )
 
     def _export(self, scene: fbx.FbxScene, dest):
 
@@ -571,12 +562,12 @@ class Mdb2FbxConversionTaskDispatcher:
     def __init__(self,
                  texture_locator_service: TextureLocatorService,
                  resource_manager: ResourceManager,
-                 feedback_queue: Queue,
+                 global_events_queue: Queue,
                  settings: Settings = Settings()):
 
         self.texture_locator_service: TextureLocatorService = texture_locator_service
         self.resource_manager = resource_manager
-        self.feedback_queue = feedback_queue
+        self.global_events_queue = global_events_queue
         self.settings = FbxFileExportJob.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
         self.logger = logging.getLogger(Mdb2FbxConversionTaskDispatcher.__name__)
         self.handled_texture_names = set()
@@ -590,6 +581,7 @@ class Mdb2FbxConversionTaskDispatcher:
         """
 
         tasks = []
+        material_meta = []
 
         wrapper = MdbWrapper(source.get())
 
@@ -597,7 +589,7 @@ class Mdb2FbxConversionTaskDispatcher:
         tasks.append(FbxFileExportJob(source,
                                       destination,
                                       texture_destination,
-                                      self.feedback_queue,
+                                      self.global_events_queue,
                                       self.settings))
 
         # export textures
@@ -624,13 +616,24 @@ class Mdb2FbxConversionTaskDispatcher:
                     continue
 
                 tasks.append(
-                    TextureConverterJob(self.feedback_queue).
+                    TextureConverterJob(self.global_events_queue).
                         input(texture_file).
                         target_fname(texture_name).
                         target_format(self.settings['texture-conversion']['format']).
                         target_dir(texture_destination)
                 )
 
+                material_meta.append(
+                    {
+                        'file': source.file.name,
+                        'node': material.host_node.node_name.string,
+                        'material': str(material)
+                    }
+                )
+
+        self.global_events_queue.put(
+            MetaDataPersistenceTask('material_meta', pandas.DataFrame(material_meta))
+        )
         return tasks
 
 

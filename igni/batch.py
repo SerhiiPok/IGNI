@@ -4,18 +4,18 @@ import yaml
 
 from .resources import Directory, ResourceType, ResourceManager, ResourceTypes, Resource
 from .settings import Settings
-from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher, TextureConverterJob, ResourceManagerTextureLocatorService
+from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher, TextureConverterJob, \
+    ResourceManagerTextureLocatorService, MetaDataPersistenceTask
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from multiprocessing import Queue
 from .logging_util import Configurer, DEFAULT_LOGGING_SETTINGS
 import logging
-from .app import PersistenceTask
-from .meta_repository import EXPORT_METADATA_REPOSITORY
+from .meta_repository import create_meta_db
 
 LOGGING_CONFIGURER = Configurer(DEFAULT_LOGGING_SETTINGS)
 RESOURCE_MANAGER: ResourceManager = None
-FEEDBACK_QUEUE: Queue = None
+GLOBAL_EVENTS_QUEUE: Queue = None
 
 MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
     'exporter': FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
@@ -190,7 +190,7 @@ class Mdb2FbxBatch:
         handled_textures = set()
         task_dispatcher = Mdb2FbxConversionTaskDispatcher(ResourceManagerTextureLocatorService(RESOURCE_MANAGER),
                                                           RESOURCE_MANAGER,
-                                                          FEEDBACK_QUEUE,
+                                                          GLOBAL_EVENTS_QUEUE,
                                                           self.settings['exporter'])
 
         with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()-1) as task_pool:
@@ -207,16 +207,17 @@ class Mdb2FbxBatch:
                     task_pool.submit(task).add_done_callback(handle_task_result)
 
 
-def feedback_handler_fn(feedback_queue: Queue, connection, logging_settings):
+def feedback_handler_fn(global_events_queue: Queue, connection_path: str, logging_settings):
+    connection = create_meta_db(Directory(connection_path))
     logging.config.dictConfig(logging_settings)
     while True:
-        if not feedback_queue.empty():
-            feedback = feedback_queue.get()
-            if isinstance(feedback, logging.LogRecord):
-                logger = logging.getLogger(feedback.name)
-                logger.handle(feedback)
-            elif isinstance(feedback, PersistenceTask):
-                feedback.data.to_sql(feedback.dest, connection)
+        if not global_events_queue.empty():
+            event = global_events_queue.get()
+            if isinstance(event, logging.LogRecord):
+                logger = logging.getLogger(event.name)
+                logger.handle(event)
+            elif isinstance(event, MetaDataPersistenceTask):
+                event.dataset.to_sql(event.table_name, connection, if_exists='append', index=False)
 
 
 if __name__ == '__main__':
@@ -229,13 +230,11 @@ if __name__ == '__main__':
         if 'logging' in batch_input:
             logging.config.dictConfig(batch_input['logging'])
 
-        # EXPORT_METADATA_REPOSITORY.configure(batch_input['repository-path'])
-
-        FEEDBACK_QUEUE = multiprocessing.Manager().Queue(-1)
+        GLOBAL_EVENTS_QUEUE = multiprocessing.Manager().Queue(-1)
         RESOURCE_MANAGER = ResourceManager(batch_input['witcher-data'])
         feedback_handler = multiprocessing.Process(target=feedback_handler_fn,
-                                                   args=(FEEDBACK_QUEUE,
-                                                         EXPORT_METADATA_REPOSITORY.connection,
+                                                   args=(GLOBAL_EVENTS_QUEUE,
+                                                         batch_input['repository-path'],
                                                          batch_input['logging']))
         feedback_handler.start()
 
@@ -247,6 +246,6 @@ if __name__ == '__main__':
             else:
                 raise Exception('unknown batch job type')
 
-        while not FEEDBACK_QUEUE.empty():
+        while not GLOBAL_EVENTS_QUEUE.empty():
             pass
         feedback_handler.kill()

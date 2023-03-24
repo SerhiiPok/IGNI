@@ -1,13 +1,5 @@
 import logging
 from multiprocessing import Queue
-from pandas import DataFrame
-
-
-class PersistenceTask:
-
-    def __init__(self, table_name: str, data: DataFrame):
-        self.dest: str = table_name
-        self.data: DataFrame = data
 
 
 class Task:
@@ -17,16 +9,16 @@ class Task:
     implementors must be pickleable
     """
 
-    def __init__(self, feedback_queue: Queue):
+    def __init__(self, global_events_queue: Queue):
         self._logger = None
-        self._feedback_queue = feedback_queue
+        self.global_events_queue = global_events_queue
 
     @property
     def logger(self):
         if self._logger is None:
-            if self._feedback_queue is None:
+            if self.global_events_queue is None:
                 raise Exception("can't configure logger for multiprocessed task because logging queue is not set")
-            queue_handler = logging.handlers.QueueHandler(self._feedback_queue)
+            queue_handler = logging.handlers.QueueHandler(self.global_events_queue)
             self._logger = logging.getLogger(type(self).__name__)
             self._logger.setLevel(logging.ERROR)
             self._logger.addHandler(queue_handler)

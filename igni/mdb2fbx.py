@@ -8,9 +8,9 @@ from .mdbutil import MdbWrapper, Material, Trimesh, NodeProperties
 from scipy.spatial.transform import Rotation
 from .app import Task
 from multiprocessing import Queue
-import logging
 from collections import namedtuple
 import pandas
+from .logging_util import getMLogger
 
 try:
     from wand import image
@@ -119,9 +119,12 @@ class ResourceManagerTextureLocatorService:
         'txi'
     ]
 
-    def __init__(self, resource_manager: ResourceManager):
+    def __init__(self, resource_manager: ResourceManager, global_events_queue):
         self.resource_manager = resource_manager
-        self.logger = logging.getLogger(type(self).__name__)
+        self.logger = getMLogger(type(self).__name__, global_events_queue)
+
+    def logging_context(self, extra):
+        self.logger.extra = extra
 
     @staticmethod
     def __likely_has_suffix__(texture_name):
@@ -303,7 +306,7 @@ class TextureConverterJob(Task):
         if not File.exists(output_path):
             try:
                 self.input_.save(filename=output_path)
-            except Exception:
+            except Exception as e:
                 self.logger.error('could not write image: {}'.format(e))
                 pass
 
@@ -370,6 +373,8 @@ class FbxFileExportJob(Task):
             'tri_count': 0
         }
         self.node_meta = []
+
+        self.logging_context = {}
 
         self.coord_service = CoordinateSystemService(self.settings['coordinate-system'])
 
@@ -452,6 +457,8 @@ class FbxFileExportJob(Task):
             self.logger.debug('set node euler rotation to {}'.format(list(fbx_node.LclRotation.Get())))
 
     def _build_fbx_node(self, fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
+
+        self.logger.extra = {'source_mdb': self.source.file.name, 'node': source_node.node_name.string}
 
         self.node_meta.append({
             'file': self.source.file.name,
@@ -569,7 +576,7 @@ class Mdb2FbxConversionTaskDispatcher:
         self.resource_manager = resource_manager
         self.global_events_queue = global_events_queue
         self.settings = FbxFileExportJob.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
-        self.logger = logging.getLogger(Mdb2FbxConversionTaskDispatcher.__name__)
+        self.logger = getMLogger(Mdb2FbxConversionTaskDispatcher.__name__, global_events_queue)
         self.handled_texture_names = set()
 
     def get_tasks(self,
@@ -579,6 +586,8 @@ class Mdb2FbxConversionTaskDispatcher:
         """
         :return: a list of tasks that should be executed to convert an mdb to an fbx
         """
+
+        self.logger.extra['source_mdb'] = source.file.name
 
         tasks = []
         material_meta = []
@@ -594,6 +603,9 @@ class Mdb2FbxConversionTaskDispatcher:
 
         # export textures
         for material in wrapper.materials:
+
+            self.logger.extra['node'] = material.host_node.node_name.string
+            self.texture_locator_service.logger.extra = self.logger.extra
 
             if len(material.material_file_pointer) > 0:
                 material_resource = self.resource_manager.get(material.material_file_pointer, ResourceTypes.MAT)

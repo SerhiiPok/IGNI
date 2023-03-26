@@ -9,7 +9,7 @@ from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher, TextureC
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from multiprocessing import Queue
-from .logging_util import Configurer, DEFAULT_LOGGING_SETTINGS
+from .logging_util import Configurer, DEFAULT_LOGGING_SETTINGS, getMLogger
 import logging
 from .meta_repository import create_meta_db
 from .app import ApplicationShutdownTask
@@ -64,7 +64,7 @@ class Mdb2FbxBatch:
                  settings: Settings = Settings()):
         self.settings = settings
         self.collection = None
-        self.logger = logging.getLogger(Mdb2FbxBatch.__name__)
+        self.logger = getMLogger(Mdb2FbxBatch.__name__, GLOBAL_EVENTS_QUEUE)
 
         def get_item_filter(batch):
 
@@ -189,7 +189,8 @@ class Mdb2FbxBatch:
                 self.logger.error('task execution finished with an exception: ' + str(result))
 
         handled_textures = set()
-        task_dispatcher = Mdb2FbxConversionTaskDispatcher(ResourceManagerTextureLocatorService(RESOURCE_MANAGER),
+        task_dispatcher = Mdb2FbxConversionTaskDispatcher(ResourceManagerTextureLocatorService(RESOURCE_MANAGER,
+                                                                                               GLOBAL_EVENTS_QUEUE),
                                                           RESOURCE_MANAGER,
                                                           GLOBAL_EVENTS_QUEUE,
                                                           self.settings['exporter'])
@@ -229,9 +230,6 @@ if __name__ == '__main__':
 
     with open(config_path, 'r') as stream:
         batch_input = yaml.safe_load(stream)
-
-        if 'logging' in batch_input:
-            logging.config.dictConfig(batch_input['logging'])
 
         GLOBAL_EVENTS_QUEUE = multiprocessing.Manager().Queue(-1)
         RESOURCE_MANAGER = ResourceManager(batch_input['witcher-data'])

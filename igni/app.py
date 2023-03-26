@@ -1,4 +1,4 @@
-import logging
+from .logging_util import getMLogger
 from multiprocessing import Queue
 
 
@@ -16,12 +16,7 @@ class Task:
     @property
     def logger(self):
         if self._logger is None:
-            if self.global_events_queue is None:
-                raise Exception("can't configure logger for multiprocessed task because logging queue is not set")
-            queue_handler = logging.handlers.QueueHandler(self.global_events_queue)
-            self._logger = logging.getLogger(type(self).__name__)
-            self._logger.setLevel(logging.ERROR)
-            self._logger.addHandler(queue_handler)
+            self._logger = getMLogger(type(self).__name__, self.global_events_queue)
         return self._logger
 
 
@@ -29,5 +24,7 @@ class ApplicationShutdownTask(Task):
 
     def __init__(self, global_events_queue: Queue):
         Task.__init__(self, global_events_queue)
+
+    def __call__(self):
         self.logger.error('APPLICATION_SHUTDOWN')
 

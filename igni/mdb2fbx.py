@@ -6,11 +6,8 @@ from .settings import Settings
 from .resources import Directory, File, Resource, ResourceTypes, ResourceManager
 from .mdbutil import MdbWrapper, Material, Trimesh, NodeProperties
 from scipy.spatial.transform import Rotation
-from .app import Task
-from multiprocessing import Queue
-from collections import namedtuple
+from .app import IgniApplicationEntity, Application
 import pandas
-from .logging_util import getMLogger
 
 try:
     from wand import image
@@ -35,9 +32,6 @@ MODULE_CLOSE_INTERCEPTOR = OnModuleClose()
 # annotation
 def picklable(fun):
     return fun
-
-
-MetaDataPersistenceTask = namedtuple('MetaDataPersistenceTask', ['table_name', 'dataset'])
 
 
 class CoordinateSystemService:
@@ -109,7 +103,7 @@ class TextureLocatorService:
         raise Exception('not implemented')
 
 
-class ResourceManagerTextureLocatorService:
+class ResourceManagerTextureLocatorService(IgniApplicationEntity):
 
     POSSIBLE_TEXTURE_EXTENSIONS = [
         'bmp',
@@ -119,12 +113,11 @@ class ResourceManagerTextureLocatorService:
         'txi'
     ]
 
-    def __init__(self, resource_manager: ResourceManager, global_events_queue):
-        self.resource_manager = resource_manager
-        self.logger = getMLogger(type(self).__name__, global_events_queue)
+    def __init__(self, resource_manager: ResourceManager):
 
-    def logging_context(self, extra):
-        self.logger.extra = extra
+        super().__init__()
+
+        self.resource_manager = resource_manager
 
     @staticmethod
     def __likely_has_suffix__(texture_name):
@@ -236,16 +229,15 @@ class TextureConversionResult:
 
 
 @picklable
-class TextureConverterJob(Task):
+class TextureConverterJob(IgniApplicationEntity):
 
     """
     this class handles the logic of conversion of textures from arbitrary formats into arbitrary formats
     """
 
-    def __init__(self,
-                 global_events_queue: Queue):
+    def __init__(self):
 
-        super().__init__(global_events_queue)
+        super().__init__()
 
         if image is None:
             self.logger.error('could not create texture converter instance because wand is not properly installed')
@@ -314,7 +306,7 @@ class TextureConverterJob(Task):
 
 
 @picklable
-class FbxFileExportJob(Task):
+class FbxFileExportJob(IgniApplicationEntity):
 
     FILE_META_TABLE_NAME = 'file_meta'
     NODE_META_TABLE_NAME = 'node_meta'
@@ -349,10 +341,9 @@ class FbxFileExportJob(Task):
                  source: Resource,
                  destination: Directory,  # can be None if no export intended
                  texture_destination: Directory,  # can be None if no export intended
-                 global_events_queue: Queue,
                  settings: Settings = Settings()):
 
-        super().__init__(global_events_queue)
+        super().__init__()
 
         assert (source.resource_type == ResourceTypes.MDB or source.resource_type == ResourceTypes.MBA)
 
@@ -526,12 +517,10 @@ class FbxFileExportJob(Task):
         recursive_add_nodes([child_ptr.data for child_ptr in source.root_node.children.data],
                             fbx_scene.GetRootNode())
 
-        self.global_events_queue.put(
-            MetaDataPersistenceTask(self.FILE_META_TABLE_NAME, pandas.DataFrame([self.file_meta]))
-        )
-        self.global_events_queue.put(
-            MetaDataPersistenceTask(self.NODE_META_TABLE_NAME, pandas.DataFrame(self.node_meta))
-        )
+        Application().persist_data(self.FILE_META_TABLE_NAME,
+                                  pandas.DataFrame([self.file_meta]))
+        Application().persist_data(self.NODE_META_TABLE_NAME,
+                                  pandas.DataFrame(self.node_meta))
 
     def _export(self, scene: fbx.FbxScene, dest):
 
@@ -558,7 +547,7 @@ class FbxFileExportJob(Task):
         self.convert_and_export()
 
 
-class Mdb2FbxConversionTaskDispatcher:
+class Mdb2FbxConversionTaskDispatcher(IgniApplicationEntity):
 
     """
     because converting mdb to fbx is a complex process involving generation of textures, generation of fbx
@@ -569,14 +558,13 @@ class Mdb2FbxConversionTaskDispatcher:
     def __init__(self,
                  texture_locator_service: TextureLocatorService,
                  resource_manager: ResourceManager,
-                 global_events_queue: Queue,
                  settings: Settings = Settings()):
+
+        super().__init__()
 
         self.texture_locator_service: TextureLocatorService = texture_locator_service
         self.resource_manager = resource_manager
-        self.global_events_queue = global_events_queue
         self.settings = FbxFileExportJob.MDB_2_FBX_CONVERTER_DEFAULT_SETTINGS.read_dict(settings).using_type_hint(FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE)
-        self.logger = getMLogger(Mdb2FbxConversionTaskDispatcher.__name__, global_events_queue)
         self.handled_texture_names = set()
 
     def get_tasks(self,
@@ -598,7 +586,6 @@ class Mdb2FbxConversionTaskDispatcher:
         tasks.append(FbxFileExportJob(source,
                                       destination,
                                       texture_destination,
-                                      self.global_events_queue,
                                       self.settings))
 
         # export textures
@@ -628,7 +615,7 @@ class Mdb2FbxConversionTaskDispatcher:
                     continue
 
                 tasks.append(
-                    TextureConverterJob(self.global_events_queue).
+                    TextureConverterJob().
                         input(texture_file).
                         target_fname(texture_name).
                         target_format(self.settings['texture-conversion']['format']).
@@ -643,9 +630,7 @@ class Mdb2FbxConversionTaskDispatcher:
                     }
                 )
 
-        self.global_events_queue.put(
-            MetaDataPersistenceTask('material_meta', pandas.DataFrame(material_meta))
-        )
+        Application().persist_data('material_meta', pandas.DataFrame(material_meta))
         return tasks
 
 

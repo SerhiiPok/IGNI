@@ -5,18 +5,8 @@ import yaml
 from .resources import Directory, ResourceType, ResourceManager, ResourceTypes, Resource
 from .settings import Settings
 from .mdb2fbx import FbxFileExportJob, Mdb2FbxConversionTaskDispatcher, TextureConverterJob, \
-    ResourceManagerTextureLocatorService, MetaDataPersistenceTask
-from concurrent.futures import ProcessPoolExecutor
-import multiprocessing
-from multiprocessing import Queue
-from .logging_util import Configurer, DEFAULT_LOGGING_SETTINGS, getMLogger
-import logging
-from .meta_repository import create_meta_db
-from .app import ApplicationShutdownTask
-
-LOGGING_CONFIGURER = Configurer(DEFAULT_LOGGING_SETTINGS)
-RESOURCE_MANAGER: ResourceManager = None
-GLOBAL_EVENTS_QUEUE: Queue = None
+    ResourceManagerTextureLocatorService
+from .app import IgniApplicationEntity, start_new_application, Application
 
 MDB_2_FBX_BATCH_SETTINGS_TEMPLATE = Settings({
     'exporter': FbxFileExportJob.MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE,
@@ -57,14 +47,17 @@ MDB_2_FBX_BATCH_DEFAULT_SETTINGS = Settings({
 })
 
 
-class Mdb2FbxBatch:
+class Mdb2FbxBatch(IgniApplicationEntity):
 
     def __init__(self,
                  resource_manager: ResourceManager,
                  settings: Settings = Settings()):
+
+        super().__init__()
+
         self.settings = settings
         self.collection = None
-        self.logger = getMLogger(Mdb2FbxBatch.__name__, GLOBAL_EVENTS_QUEUE)
+        self.resource_manager = resource_manager
 
         def get_item_filter(batch):
 
@@ -180,48 +173,24 @@ class Mdb2FbxBatch:
 
     def run(self):
 
-        def handle_task_result(result):
-            if result.exception() is not None:
-                self.logger.error('EXCEPTION WHEN EXPORTING FBX: ' + str(result.exception()))
-            if result.result() is not None:
-                self.logger.error('type of the result is: ' + str(type(result.result())))
-            if isinstance(result, Exception):
-                self.logger.error('task execution finished with an exception: ' + str(result))
-
         handled_textures = set()
-        task_dispatcher = Mdb2FbxConversionTaskDispatcher(ResourceManagerTextureLocatorService(RESOURCE_MANAGER,
-                                                                                               GLOBAL_EVENTS_QUEUE),
-                                                          RESOURCE_MANAGER,
-                                                          GLOBAL_EVENTS_QUEUE,
+        texture_locator_service = ResourceManagerTextureLocatorService(self.resource_manager)
+
+        task_dispatcher = Mdb2FbxConversionTaskDispatcher(texture_locator_service,
+                                                          self.resource_manager,
                                                           self.settings['exporter'])
 
-        with ProcessPoolExecutor(max_workers=multiprocessing.cpu_count()-1) as task_pool:
-            for resource in self.collection:
-                destination_folder, texture_destination_folder = self._find_destination_folder(resource)
-                tasks = task_dispatcher.get_tasks(resource, destination_folder, texture_destination_folder)
+        for resource in self.collection:
+            destination_folder, texture_destination_folder = self._find_destination_folder(resource)
+            tasks = task_dispatcher.get_tasks(resource, destination_folder, texture_destination_folder)
 
-                for task in tasks:
-                    if isinstance(task, TextureConverterJob):
-                        if task.target_fname_ in handled_textures:
-                            continue
-                        else:
-                            handled_textures.add(task.target_fname_)
-                    task_pool.submit(task).add_done_callback(handle_task_result)
-
-            task_pool.submit(ApplicationShutdownTask(GLOBAL_EVENTS_QUEUE))
-
-
-def feedback_handler_fn(global_events_queue: Queue, connection_path: str, logging_settings):
-    connection = create_meta_db(Directory(connection_path))
-    logging.config.dictConfig(logging_settings)
-    while True:
-        if not global_events_queue.empty():
-            event = global_events_queue.get()
-            if isinstance(event, logging.LogRecord):
-                logger = logging.getLogger(event.name)
-                logger.handle(event)
-            elif isinstance(event, MetaDataPersistenceTask):
-                event.dataset.to_sql(event.table_name, connection, if_exists='append', index=False)
+            for task in tasks:
+                if isinstance(task, TextureConverterJob):
+                    if task.target_fname_ in handled_textures:
+                        continue
+                    else:
+                        handled_textures.add(task.target_fname_)
+                Application().submit_task(task)
 
 
 if __name__ == '__main__':
@@ -231,22 +200,17 @@ if __name__ == '__main__':
     with open(config_path, 'r') as stream:
         batch_input = yaml.safe_load(stream)
 
-        GLOBAL_EVENTS_QUEUE = multiprocessing.Manager().Queue(-1)
-        RESOURCE_MANAGER = ResourceManager(batch_input['witcher-data'])
-        feedback_handler = multiprocessing.Process(target=feedback_handler_fn,
-                                                   args=(GLOBAL_EVENTS_QUEUE,
-                                                         batch_input['repository-path'],
-                                                         batch_input['logging']))
-        feedback_handler.start()
+        igni_app = start_new_application(Settings(batch_input['application']))
 
         for batch_definition in batch_input['batch']:
 
             if batch_definition['type'] == 'mdb2fbx':
-                Mdb2FbxBatch(RESOURCE_MANAGER,
-                             Settings(batch_definition['settings']).using_type_hint(MDB_2_FBX_BATCH_SETTINGS_TEMPLATE)).run()
+                igni_app.submit_task(
+                    Mdb2FbxBatch(igni_app.resource_manager,
+                                 Settings(batch_definition['settings']).using_type_hint(
+                                     MDB_2_FBX_BATCH_SETTINGS_TEMPLATE))
+                )
             else:
                 raise Exception('unknown batch job type')
 
-        while not GLOBAL_EVENTS_QUEUE.empty():
-            pass
-        feedback_handler.kill()
+        igni_app.shutdown_on_idle()

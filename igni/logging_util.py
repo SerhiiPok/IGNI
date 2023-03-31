@@ -89,7 +89,7 @@ class DatabaseHandler(logging.Handler):
             self.log_data = []
 
 
-def getMLogger(name: str, global_events_queue):
+def get_interprocess_queue_logger(name: str, global_events_queue):
 
     """
     get a logger for a multiprocess application (sends logs to a shared queue)
@@ -99,7 +99,7 @@ def getMLogger(name: str, global_events_queue):
         raise Exception("can't configure logger for process because logging queue was not supplied")
     queue_handler = IgniQueueHandler(global_events_queue)
     logger = logging.getLogger(name)
-    logger.setLevel(logging.ERROR)
+    logger.setLevel(logging.INFO)
     logger.addHandler(queue_handler)
 
     return logging.LoggerAdapter(logger, {'source_mdb': None, 'node': None})

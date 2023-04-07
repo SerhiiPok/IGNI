@@ -10,6 +10,7 @@ from .resources import ResourceManager, Directory
 import os.path
 import time
 import math
+from datetime import datetime
 
 
 class PersistenceTask:
@@ -143,7 +144,11 @@ class IgniApplication:
                                    application_shutdown_queue: Queue,
                                    conn_path: str):
 
-        conn = sqlite3.connect(os.path.join(conn_path, 'export_meta.db'))
+        now = datetime.now()
+        db_name = 'export_meta_' + str(now.year) + str(now.month) + str(now.day) + '_' + str(now.hour) \
+                  + str(now.minute) + '.db'
+
+        conn = sqlite3.connect(os.path.join(conn_path, db_name))
         shutdown_scheduled = False
 
         while True:

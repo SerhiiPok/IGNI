@@ -622,13 +622,14 @@ class Mdb2FbxConversionTaskDispatcher(IgniApplicationEntity):
                         target_dir(texture_destination)
                 )
 
-                material_meta.append(
-                    {
-                        'file': source.file.name,
-                        'node': material.host_node.node_name.string,
-                        'material': str(material)
-                    }
-                )
+            material_meta.append(
+                {
+                    'file': source.file.name,
+                    'node': material.host_node.node_name.string,
+                    'shader': material.shader,
+                    'material': str(material)
+                }
+            )
 
         Application().persist_data('material_meta', pandas.DataFrame(material_meta))
         return tasks

@@ -228,6 +228,12 @@ class TextureConversionResult:
         return self.converted_texture_file is not None
 
 
+class MaterialHandler(IgniApplicationEntity):
+
+    def __init__(self):
+        super().__init__()
+
+
 @picklable
 class TextureConverterJob(IgniApplicationEntity):
 

@@ -26,6 +26,7 @@ class IgniApplicationReference:
         self._logging_queue = None
         self._application_events_queue = None
         self._persistence_events_queue = None
+        self.resource_manager: ResourceManager = None
 
     def submit_task(self, task):
 
@@ -48,12 +49,14 @@ _Application: IgniApplicationReference = None
 
 def _set_up_app_reference_for_child_process(logging_queue: Queue,
                                             application_events_queue: Queue,
-                                            application_db_events_queue: Queue):
+                                            application_db_events_queue: Queue,
+                                            resource_manager: ResourceManager):
     global _Application
     _Application = IgniApplicationReference()
     _Application._logging_queue = logging_queue
     _Application._application_events_queue = application_events_queue
     _Application._persistence_events_queue = application_db_events_queue
+    _Application.resource_manager = ResourceManager.from_picklable_in_memory_copy(resource_manager)
 
 
 def Application():
@@ -66,15 +69,21 @@ class IgniApplication:
 
     class ChildProcessApplicationInitializer:
 
-        def __init__(self, logging_queue, application_events_queue, application_db_events_queue):
+        def __init__(self,
+                     logging_queue,
+                     application_events_queue,
+                     application_db_events_queue,
+                     resource_manager):
             self.logging_queue = logging_queue
             self.application_events_queue = application_events_queue
             self.application_db_events_queue = application_db_events_queue
+            self.resource_manager = resource_manager
 
         def __call__(self):
             _set_up_app_reference_for_child_process(self.logging_queue,
                                                     self.application_events_queue,
-                                                    self.application_db_events_queue)
+                                                    self.application_db_events_queue,
+                                                    self.resource_manager)
 
     def __init__(self, application_settings: Settings):
 
@@ -116,6 +125,7 @@ class IgniApplication:
             self._application_reference._logging_queue = self._logging_queue
             self._application_reference._application_events_queue = self._application_events_queue
             self._application_reference._persistence_events_queue = self._application_db_events_queue
+            self._application_reference.resource_manager = self.resource_manager
         return self._application_reference
 
     @staticmethod
@@ -232,7 +242,8 @@ class IgniApplication:
         child_process_application_initializer = self.ChildProcessApplicationInitializer(
             self._logging_queue,
             self._application_events_queue,
-            self._application_db_events_queue
+            self._application_db_events_queue,
+            self.resource_manager.get_picklable_in_memory_copy()
         )
 
         self.logger.info('starting processes and task executor...')

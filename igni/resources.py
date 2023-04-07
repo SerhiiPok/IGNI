@@ -301,18 +301,41 @@ class Resource:
 class ResourceManager:
 
     def __init__(self, root_dir):
+
+        self.root_directory: Directory = None
+        self.files = None
+        self.file_hash = {}
+
+        if root_dir is None:
+            return
+
         if type(root_dir) is Directory:
             self.root_directory = root_dir
         else:
             self.root_directory = Directory(root_dir)
         self.files = self.root_directory.collect_files()
 
-        self.file_hash = {}
-        for file in self.files:
-            if file.name in self.file_hash:
-                self.file_hash[file.name].append(file)
+        ResourceManager._generate_hash_(self)
+
+    @staticmethod
+    def _generate_hash_(resource_manager):
+        resource_manager.file_hash = {}
+        for file in resource_manager.files:
+            if file.name in resource_manager.file_hash:
+                resource_manager.file_hash[file.name].append(file)
             else:
-                self.file_hash[file.name] = [file]
+                resource_manager.file_hash[file.name] = [file]
+
+    @staticmethod
+    def from_picklable_in_memory_copy(in_mem_copy):
+        resource_manager = ResourceManager(None)
+        resource_manager.root_directory = Directory(in_mem_copy[0])
+        resource_manager.files = [File(path) for path in in_mem_copy[1:]]
+        ResourceManager._generate_hash_(resource_manager)
+        return resource_manager
+
+    def get_picklable_in_memory_copy(self):
+        return [self.root_directory.full_path] + [file.full_path for file in self.files]
 
     def get_all_of_type(self, resource_types, filterer=None):
 

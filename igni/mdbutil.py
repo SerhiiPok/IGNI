@@ -203,7 +203,7 @@ class Material:
         self.day_night_transition_string: str = ''
         self.day_night_light_maps: dict = {}
         self.light_map_name: str = ''
-        self.host_node = None
+        self.host_node: Mdb.Node = None
         self.material_file_pointer = ''
 
     @staticmethod

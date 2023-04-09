@@ -97,13 +97,13 @@ class CoordinateSystemService:
         return str(self.coord_mapping)
 
 
-class TextureLocatorService:
+class TextureLocatorService(IgniApplicationEntity):
 
     def locate(self, texture_name: str):
         raise Exception('not implemented')
 
 
-class ResourceManagerTextureLocatorService(IgniApplicationEntity):
+class ResourceManagerTextureLocatorService(TextureLocatorService):
 
     POSSIBLE_TEXTURE_EXTENSIONS = [
         'bmp',
@@ -113,11 +113,9 @@ class ResourceManagerTextureLocatorService(IgniApplicationEntity):
         'txi'
     ]
 
-    def __init__(self, resource_manager: ResourceManager):
+    def __init__(self):
 
         super().__init__()
-
-        self.resource_manager = resource_manager
 
     @staticmethod
     def __likely_has_suffix__(texture_name):
@@ -157,7 +155,7 @@ class ResourceManagerTextureLocatorService(IgniApplicationEntity):
 
         for name_to_attempt in names_to_attempt:
             attempted_names.append(name_to_attempt)
-            result = self.__locate__(name_to_attempt, self.resource_manager.get_by_file_name(name_to_attempt))
+            result = self.__locate__(name_to_attempt, Application().resource_manager.get_by_file_name(name_to_attempt))
             if result is not None:
                 break
 
@@ -228,10 +226,61 @@ class TextureConversionResult:
         return self.converted_texture_file is not None
 
 
-class MaterialHandler(IgniApplicationEntity):
+class MaterialExportHandler(IgniApplicationEntity):
 
-    def __init__(self):
+    def __init__(self,
+                 texture_locator_service: TextureLocatorService):
         super().__init__()
+
+        self.texture_locator_service = texture_locator_service
+        self.handled_texture_names = set()
+
+    def handle(self,
+               material: Material,
+               source_file: str,
+               target_destination: Directory,
+               target_format: str):
+
+        self.logger.extra['source_mdb'] = source_file
+        self.logger.extra['node'] = material.host_node.node_name.string
+
+        if len(material.material_file_pointer) > 0:
+            material_resource = Application().resource_manager.get(material.material_file_pointer,
+                                                                   ResourceTypes.MAT)
+            if material_resource is None:
+                self.logger.error('material is pointing to a material file {} but could locate none'.format(
+                            material.material_file_pointer))
+            else:
+                self.logger.debug('reading from material file {}'.format(material.material_file_pointer))
+                material.read_material_file(material_resource.file)
+
+        self.send_texture_export_tasks(material,
+                                       target_destination,
+                                       target_format)
+
+    def send_texture_export_tasks(self,
+                                  material: Material,
+                                  target_destination: Directory,
+                                  target_format: str):
+        for texture_name in material.get_all_texture_names():
+
+            if texture_name in self.handled_texture_names:
+                continue
+            else:
+                self.handled_texture_names.add(texture_name)
+
+            texture_file = self.texture_locator_service.locate(texture_name)
+            if texture_file is None:
+                continue
+
+            Application().submit_task(
+                TextureConverterJob().
+                    input(texture_file).
+                    target_fname(texture_name).
+                    target_format(target_format).
+                    target_dir(target_destination).
+                    execution_id('texture_export_' + texture_name)
+            )
 
 
 @picklable
@@ -311,11 +360,15 @@ class TextureConverterJob(IgniApplicationEntity):
         return TextureConversionResult(output_path)
 
 
+material_export_handler = MaterialExportHandler(ResourceManagerTextureLocatorService())
+
+
 @picklable
 class FbxFileExportJob(IgniApplicationEntity):
 
     FILE_META_TABLE_NAME = 'file_meta'
     NODE_META_TABLE_NAME = 'node_meta'
+    MATERIAL_META_TABLE_NAME = 'material_meta'
 
     MDB_2_FBX_CONVERTER_SETTINGS_TEMPLATE = Settings({
         'texture-conversion': {
@@ -370,6 +423,7 @@ class FbxFileExportJob(IgniApplicationEntity):
             'tri_count': 0
         }
         self.node_meta = []
+        self.material_meta = []
 
         self.logging_context = {}
 
@@ -455,6 +509,8 @@ class FbxFileExportJob(IgniApplicationEntity):
 
     def _build_fbx_node(self, fbx_node: fbx.FbxNode, source_node: Mdb.Node, fbx_scene: fbx.FbxScene):
 
+        global material_export_handler
+
         self.logger.extra = {'source_mdb': self.source.file.name, 'node': source_node.node_name.string}
 
         self.node_meta.append({
@@ -488,6 +544,18 @@ class FbxFileExportJob(IgniApplicationEntity):
                 material = Material.from_node(source_node)
                 if not material.is_empty():
                     self.file_meta['material_count'] += 1
+                    self.material_meta.append(
+                        {
+                            'file': self.source.file.name,
+                            'node': material.host_node.node_name.string,
+                            'shader': material.shader,
+                            'material': str(material)
+                        }
+                    )
+                    material_export_handler.handle(material,
+                                                   self.source.file.name,
+                                                   self.texture_output_destination,
+                                                   self.settings['texture-conversion']['format'])
             except Exception as e:
                 self.logger.error("exception while parsing material: {}".format(e))
 
@@ -527,6 +595,8 @@ class FbxFileExportJob(IgniApplicationEntity):
                                   pandas.DataFrame([self.file_meta]))
         Application().persist_data(self.NODE_META_TABLE_NAME,
                                   pandas.DataFrame(self.node_meta))
+        Application().persist_data(self.MATERIAL_META_TABLE_NAME,
+                                   pandas.DataFrame(self.material_meta))
 
     def _export(self, scene: fbx.FbxScene, dest):
 

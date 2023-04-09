@@ -173,24 +173,16 @@ class Mdb2FbxBatch(IgniApplicationEntity):
 
     def run(self):
 
-        handled_textures = set()
-        texture_locator_service = ResourceManagerTextureLocatorService(self.resource_manager)
-
-        task_dispatcher = Mdb2FbxConversionTaskDispatcher(texture_locator_service,
-                                                          self.resource_manager,
-                                                          self.settings['exporter'])
-
         for resource in self.collection:
             destination_folder, texture_destination_folder = self._find_destination_folder(resource)
-            tasks = task_dispatcher.get_tasks(resource, destination_folder, texture_destination_folder)
-
-            for task in tasks:
-                if isinstance(task, TextureConverterJob):
-                    if task.target_fname_ in handled_textures:
-                        continue
-                    else:
-                        handled_textures.add(task.target_fname_)
-                Application().submit_task(task)
+            Application().submit_task(
+                FbxFileExportJob(
+                    resource,
+                    destination_folder,
+                    texture_destination_folder,
+                    self.settings['exporter']
+                )
+            )
 
 
 if __name__ == '__main__':

@@ -180,6 +180,8 @@ class IgniApplication:
     @staticmethod
     def _application_events_monitoring_loop(app):  # pass reference to application itself, this will be rolling in a thread
 
+        already_executed_tasks = set()
+
         # TODO custom callbacks
         def _task_execution_callback(future):
             if future.exception():
@@ -194,6 +196,13 @@ class IgniApplication:
 
             if not application_events_queue.empty():
                 application_event = application_events_queue.get()
+
+                if application_event.execution_id is not None and \
+                        application_event.execution_id in already_executed_tasks:
+                    continue
+                else:
+                    already_executed_tasks.add(application_event.execution_id)
+
                 future = task_executor.submit(application_event)
                 future.add_done_callback(_task_execution_callback)
                 app._running_tasks.append(future)
@@ -340,6 +349,7 @@ class IgniApplicationEntity:
     def __init__(self):
 
         self._logger = None
+        self._execution_id = None
 
     @property
     def logger(self):
@@ -356,6 +366,10 @@ class IgniApplicationEntity:
 
     def run(self):
         raise Exception('not implemented')
+
+    def execution_id(self, id_):
+        self._execution_id = id_
+        return self
 
     def __call__(self):
         self.run()
